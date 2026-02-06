@@ -10,6 +10,7 @@ export interface FormatterConfig {
 
 export interface RustfmtContext {
     cwd: string | undefined;
+    crateRoot?: string;
     configPath?: string;
     edition?: string;
     toolchain?: string;
@@ -45,6 +46,14 @@ export class RustFormatter {
 
     public async resolveContext(filePath: string, workspaceFolder?: string): Promise<RustfmtContext> {
         return resolveRustfmtContext(filePath, workspaceFolder);
+    }
+
+    public async cargoFmt(context: RustfmtContext, token?: vscode.CancellationToken): Promise<boolean> {
+        if (!context.crateRoot) {
+            return false;
+        }
+
+        return this.runCargoFmt(context.crateRoot, context.toolchain, token);
     }
 
     private async formatWithRustfmt(
@@ -153,6 +162,88 @@ export class RustFormatter {
     public updateConfig(config: FormatterConfig): void {
         this.config = config;
     }
+
+    private async runCargoFmt(
+        cwd: string,
+        toolchain?: string,
+        token?: vscode.CancellationToken
+    ): Promise<boolean> {
+        console.log(`[rust-fmt] Running cargo fmt in: ${cwd}`);
+
+        if (token?.isCancellationRequested) {
+            return false;
+        }
+
+        return new Promise((resolve) => {
+            const args = ['fmt'];
+            const env = { ...process.env };
+            if (toolchain && !env.RUSTUP_TOOLCHAIN) {
+                env.RUSTUP_TOOLCHAIN = toolchain;
+                console.log(`[rust-fmt] Using toolchain override for cargo fmt: ${toolchain}`);
+            }
+
+            const cargo = cp.spawn('cargo', args, {
+                cwd,
+                shell: false,
+                env
+            });
+
+            let stderr = '';
+            let settled = false;
+            const timeoutMs = 60000;
+            const cancelSubscription = token?.onCancellationRequested(() => {
+                console.warn('[rust-fmt] cargo fmt canceled, killing process');
+                cargo.kill();
+                finish(false);
+            });
+
+            const finish = (result: boolean) => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                clearTimeout(timeout);
+                cancelSubscription?.dispose();
+                resolve(result);
+            };
+
+            const timeout = setTimeout(() => {
+                console.error('[rust-fmt] Timeout: cargo fmt took too long, killing process');
+                cargo.kill();
+                finish(false);
+            }, timeoutMs);
+
+            cargo.stderr.on('data', (data) => {
+                stderr += data.toString();
+            });
+
+            cargo.on('error', (err) => {
+                if (settled) {
+                    return;
+                }
+                console.error('[rust-fmt] cargo fmt error:', err);
+                vscode.window.showErrorMessage(`Failed to run cargo fmt: ${err.message}`);
+                finish(false);
+            });
+
+            cargo.on('close', (code) => {
+                if (settled) {
+                    return;
+                }
+                if (code === 0) {
+                    console.log('[rust-fmt] cargo fmt completed successfully');
+                    finish(true);
+                } else {
+                    console.error(`[rust-fmt] cargo fmt exited with code ${code}`);
+                    if (stderr) {
+                        console.log(`[rust-fmt] cargo fmt stderr: ${stderr}`);
+                    }
+                    vscode.window.showErrorMessage(`cargo fmt exited with code ${code}: ${stderr}`);
+                    finish(false);
+                }
+            });
+        });
+    }
 }
 
 function buildRustfmtArgs(extraArgs: string[], context: RustfmtContext): string[] {
@@ -190,6 +281,7 @@ async function resolveRustfmtContext(filePath: string, workspaceFolder?: string)
 
     return {
         cwd: crateRoot ?? workspaceFolder ?? fileDir,
+        crateRoot: cargoTomlPath ? path.dirname(cargoTomlPath) : undefined,
         configPath: configPath ?? undefined,
         edition,
         toolchain

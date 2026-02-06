@@ -61,6 +61,10 @@
       {
         "command": "rust-fmt.formatWorkspace",
         "title": "Format Workspace with rustfmt"
+      },
+      {
+        "command": "rust-fmt.useAsDefaultFormatter",
+        "title": "Use rust-fmt as Default Formatter"
       }
     ],
     "keybindings": [

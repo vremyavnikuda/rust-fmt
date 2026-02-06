@@ -83,12 +83,9 @@ export function activate(context: vscode.ExtensionContext) {
                 cancellable: true
             },
             async (progress, token) => {
-                let formatted = 0;
-                let skipped = 0;
                 let failed = 0;
                 let processed = 0;
                 let dirtySkipped = 0;
-                let cargoFormattedCrates = 0;
                 let cargoFailedCrates = 0;
                 const contextCache = new Map<string, RustfmtContext>();
                 const crateGroups = new Map<string, { context: RustfmtContext; uris: vscode.Uri[] }>();
@@ -133,9 +130,7 @@ export function activate(context: vscode.ExtensionContext) {
                         progress.report({ message: `cargo fmt ${crateIndex}/${crateGroups.size}: ${path.basename(crateRoot)}` });
 
                         const ok = await formatter.cargoFmt(group.context, token);
-                        if (ok) {
-                            cargoFormattedCrates += 1;
-                        } else {
+                        if (!ok) {
                             cargoFailedCrates += 1;
                             fallbackUris.push(...group.uris);
                         }
@@ -169,13 +164,9 @@ export function activate(context: vscode.ExtensionContext) {
                             const edit = new vscode.WorkspaceEdit();
                             edit.set(uri, edits);
                             const applied = await vscode.workspace.applyEdit(edit);
-                            if (applied) {
-                                formatted += 1;
-                            } else {
+                            if (!applied) {
                                 failed += 1;
                             }
-                        } else {
-                            skipped += 1;
                         }
                     } catch {
                         failed += 1;
@@ -433,7 +424,7 @@ async function applyDefaultFormatterSettings(
     const config = vscode.workspace.getConfiguration('editor', scope);
     let target = options?.target;
     if (options?.askTarget) {
-        target = await pickConfigurationTarget(resource);
+        target = await pickConfigurationTarget();
         if (target === undefined) {
             return;
         }
@@ -502,7 +493,7 @@ function resolveConfigurationTarget(
     return fallback;
 }
 
-async function pickConfigurationTarget(resource?: vscode.Uri): Promise<vscode.ConfigurationTarget | undefined> {
+async function pickConfigurationTarget(): Promise<vscode.ConfigurationTarget | undefined> {
     const folders = vscode.workspace.workspaceFolders;
     if (!folders || folders.length === 0) {
         return vscode.ConfigurationTarget.Global;

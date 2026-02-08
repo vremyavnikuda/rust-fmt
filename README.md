@@ -1,4 +1,6 @@
-﻿# rust fmt
+![rust-fmt banner](assets/baner.png)
+
+# rust fmt
 
 Simple VS Code extension for formatting Rust code using `rustfmt`.
 
@@ -65,3 +67,4 @@ It also:
 ## Troubleshooting
 
 - `rustfmt` not found: install it via `rustup component add rustfmt` or set `rustfmt.path` to the executable.
+

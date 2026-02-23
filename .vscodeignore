@@ -1,7 +1,6 @@
 .github/**
 out/**/*.map
 src/**
-test/**
 test-rs/**
 .vscode/**
 .editorconfig

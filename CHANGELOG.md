@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.4 - 
+
+### Changed
+- Simplified status bar UX: click opens Control Center, hover shows quick action links.
+- Unified behavior controls into one Control Center flow and removed toggle-heavy UI.
+- Updated workspace format shortcut to `Ctrl+Alt+Shift+F` / `Cmd+Option+Shift+F` and clarified command naming.
+
+### Added
+- New Git-based formatting commands: `Format Changed Rust Files` and `Format Staged Rust Files`.
+- New Control Center and Logs commands for quick access from the status bar.
+- New `rustfmt.onboarding.mode` setting (`quiet` / `guided`) for default formatter prompts.
+
 ## 0.1.3 - 2026-02-06
 
 ### Added

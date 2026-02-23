@@ -1,6 +1,7 @@
 node_modules/
 out
 *.vsix
-sample-rust
-TASKS.md
+img
+test-rs/target
 test-rs
+todo.md

@@ -1,32 +1,40 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { RustFormatter, FormatterConfig, RustfmtContext } from './formatter';
+import {
+    applyDefaultFormatterSettings,
+    DEFAULT_FORMATTER_COMMAND,
+    getRustConfigurationScope,
+    getRustfmtConfiguration,
+    initializeDefaultFormatterPromptState,
+    maybePromptDefaultFormatter
+} from './defaultFormatter';
+import {
+    buildStatusBarTooltip,
+    ControlCenterActionId,
+    pickControlCenterAction
+} from './controlCenter';
+import { collectGitRustUris } from './gitSelection';
 
 let formatter: RustFormatter;
 const activeFormats = new Map<string, { tokenSource: vscode.CancellationTokenSource; promise: Promise<vscode.TextEdit[]> }>();
 const MAX_FILE_SIZE_MB = 2;
 let statusBarItem: vscode.StatusBarItem;
-const DEFAULT_FORMATTER_ID = 'vremyavnikuda.rust-fmt';
-const DEFAULT_FORMATTER_COMMAND = 'rust-fmt.useAsDefaultFormatter';
-const DEFAULT_FORMATTER_LAST_OBSERVED_KEY = 'rustfmt.defaultFormatterLastObserved';
-const DEFAULT_FORMATTER_PROMPT_SUPPRESS_KEY = 'rustfmt.defaultFormatterPromptSuppress';
-const DEFAULT_FORMATTER_NONE_SENTINEL = '__none__';
-const DEFAULT_FORMATTER_PROMPT_STATE_VERSION_KEY = 'rustfmt.defaultFormatterPromptStateVersion';
-const DEFAULT_FORMATTER_PROMPT_STATE_VERSION = 1;
-let promptInProgress = false;
-let ignoreLastObservedOnce = false;
+let outputChannel: vscode.OutputChannel | undefined;
+let extensionVersion = 'unknown';
+const CONTROL_CENTER_COMMAND = 'rust-fmt.controlCenter';
+const CONFIGURE_BEHAVIOR_COMMAND = 'rust-fmt.configureBehavior';
+const OPEN_LOGS_COMMAND = 'rust-fmt.openLogs';
 
-export function activate(context: vscode.ExtensionContext) {
+export function activate(context: vscode.ExtensionContext): void {
     console.log('[rust-fmt] Extension activated');
+    outputChannel = vscode.window.createOutputChannel('rust-fmt');
+    extensionVersion = context.extension.packageJSON?.version ?? 'unknown';
+    writeLog('Extension activated');
 
-    const promptStateVersion = context.workspaceState.get<number>(DEFAULT_FORMATTER_PROMPT_STATE_VERSION_KEY);
-    if (promptStateVersion !== DEFAULT_FORMATTER_PROMPT_STATE_VERSION) {
-        ignoreLastObservedOnce = true;
-        void context.workspaceState.update(DEFAULT_FORMATTER_PROMPT_STATE_VERSION_KEY, DEFAULT_FORMATTER_PROMPT_STATE_VERSION);
-        void context.workspaceState.update(DEFAULT_FORMATTER_LAST_OBSERVED_KEY, undefined);
-    }
+    initializeDefaultFormatterPromptState(context);
 
-    const config = getFormatterConfig();
+    const config = getFormatterConfig(vscode.window.activeTextEditor?.document.uri);
     console.log(`[rust-fmt] Config: rustfmtPath=${config.rustfmtPath}, extraArgs=${JSON.stringify(config.extraArgs)}`);
     formatter = new RustFormatter(config);
 
@@ -195,13 +203,34 @@ export function activate(context: vscode.ExtensionContext) {
         );
     });
 
+    const controlCenterCommand = vscode.commands.registerCommand(CONTROL_CENTER_COMMAND, async () => {
+        await openControlCenter(context);
+    });
+
+    const configureBehaviorCommand = vscode.commands.registerCommand(CONFIGURE_BEHAVIOR_COMMAND, async () => {
+        await openControlCenter(context);
+        updateStatusBar(vscode.window.activeTextEditor);
+    });
+
+    const openLogsCommand = vscode.commands.registerCommand(OPEN_LOGS_COMMAND, async () => {
+        outputChannel?.show(true);
+    });
+
+    const formatChangedCommand = vscode.commands.registerCommand('rust-fmt.formatChanged', async () => {
+        await formatGitSelection('working');
+    });
+
+    const formatStagedCommand = vscode.commands.registerCommand('rust-fmt.formatStaged', async () => {
+        await formatGitSelection('staged');
+    });
+
     const useAsDefaultFormatterCommand = vscode.commands.registerCommand(DEFAULT_FORMATTER_COMMAND, async () => {
         await applyDefaultFormatterSettings(vscode.window.activeTextEditor?.document.uri, context, { askTarget: true });
     });
 
     const configListener = vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration('rustfmt')) {
-            const newConfig = getFormatterConfig();
+            const newConfig = getFormatterConfig(vscode.window.activeTextEditor?.document.uri);
             formatter.updateConfig(newConfig);
         }
 
@@ -212,12 +241,22 @@ export function activate(context: vscode.ExtensionContext) {
         ) {
             void maybePromptDefaultFormatter(context, vscode.window.activeTextEditor);
         }
+
+        if (e.affectsConfiguration('rustfmt.onboarding.mode')) {
+            void maybePromptDefaultFormatter(context, vscode.window.activeTextEditor);
+        }
+
+        if (
+            e.affectsConfiguration('rustfmt') ||
+            e.affectsConfiguration('editor.formatOnSave', rustScope)
+        ) {
+            updateStatusBar(vscode.window.activeTextEditor);
+        }
     });
 
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-    statusBarItem.text = 'rust-fmt: active';
-    statusBarItem.tooltip = 'rust-fmt is active. Click to format workspace.';
-    statusBarItem.command = 'rust-fmt.formatWorkspace';
+    updateStatusBarTooltip();
+    statusBarItem.command = CONTROL_CENTER_COMMAND;
 
     const editorListener = vscode.window.onDidChangeActiveTextEditor((editor) => {
         updateStatusBar(editor);
@@ -228,12 +267,18 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         formattingProvider,
+        controlCenterCommand,
+        configureBehaviorCommand,
+        openLogsCommand,
         formatCommand,
         formatWorkspaceCommand,
+        formatChangedCommand,
+        formatStagedCommand,
         useAsDefaultFormatterCommand,
         configListener,
         editorListener,
-        statusBarItem
+        statusBarItem,
+        outputChannel
     );
 }
 
@@ -249,7 +294,7 @@ async function formatDocument(
         try {
             await existing.promise;
         } catch {
-            // REVIEW:Ignore errors from canceled/failed format runs.
+            // Ignore errors from canceled or failed format runs.
         }
     }
 
@@ -318,13 +363,184 @@ async function performFormat(
     return [vscode.TextEdit.replace(fullRange, formattedText)];
 }
 
-function getFormatterConfig(): FormatterConfig {
-    const config = vscode.workspace.getConfiguration('rustfmt');
+function getFormatterConfig(resource?: vscode.Uri): FormatterConfig {
+    const config = getRustfmtConfiguration(resource);
 
     return {
         rustfmtPath: config.get<string>('path') || 'rustfmt',
         extraArgs: config.get<string[]>('extraArgs') || []
     };
+}
+
+async function openControlCenter(context: vscode.ExtensionContext): Promise<void> {
+    const action = await pickControlCenterAction();
+
+    if (!action) {
+        return;
+    }
+
+    const keepOpen = await runControlCenterAction(action, context);
+    if (keepOpen) {
+        await openControlCenter(context);
+    }
+}
+
+async function runControlCenterAction(action: ControlCenterActionId, context: vscode.ExtensionContext): Promise<boolean> {
+    const activeResource = vscode.window.activeTextEditor?.document.uri;
+
+    switch (action) {
+        case 'runWorkspace':
+            await vscode.commands.executeCommand('rust-fmt.formatWorkspace');
+            return false;
+        case 'runChanged':
+            await vscode.commands.executeCommand('rust-fmt.formatChanged');
+            return false;
+        case 'runStaged':
+            await vscode.commands.executeCommand('rust-fmt.formatStaged');
+            return false;
+        case 'setDefault':
+            await applyDefaultFormatterSettings(activeResource, context, { askTarget: true });
+            return false;
+        case 'openLogs':
+            outputChannel?.show(true);
+            return false;
+        case 'reloadWorkspace':
+            await vscode.commands.executeCommand('workbench.action.reloadWindow');
+            return false;
+        default:
+            return false;
+    }
+}
+
+async function formatGitSelection(mode: 'working' | 'staged'): Promise<void> {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) {
+        vscode.window.showWarningMessage('No workspace folder open');
+        return;
+    }
+
+    const result = await collectGitRustUris(mode, folders);
+    if (result.uris.length === 0) {
+        const label = mode === 'staged' ? 'staged' : 'changed';
+        if (result.skippedFolders.length > 0) {
+            vscode.window.showWarningMessage(`No ${label} Rust files found. Some folders are not valid git worktrees.`);
+            return;
+        }
+
+        vscode.window.showInformationMessage(`No ${label} Rust files found.`);
+        return;
+    }
+
+    await formatSelectedUris(
+        result.uris,
+        mode === 'staged' ? 'rust-fmt: Formatting staged Rust files' : 'rust-fmt: Formatting changed Rust files',
+        mode
+    );
+}
+
+function writeLog(message: string): void {
+    const line = `[${new Date().toISOString()}] ${message}`;
+    outputChannel?.appendLine(line);
+}
+
+function updateStatusBarTooltip(): void {
+    if (!statusBarItem) {
+        return;
+    }
+
+    statusBarItem.tooltip = buildStatusBarTooltip(extensionVersion, {
+        openLogs: OPEN_LOGS_COMMAND,
+        openControlCenter: CONTROL_CENTER_COMMAND,
+        formatWorkspace: 'rust-fmt.formatWorkspace',
+        formatChanged: 'rust-fmt.formatChanged',
+        formatStaged: 'rust-fmt.formatStaged',
+        setDefaultFormatter: DEFAULT_FORMATTER_COMMAND,
+        reloadWorkspace: 'workbench.action.reloadWindow'
+    });
+}
+
+async function formatSelectedUris(
+    uris: vscode.Uri[],
+    title: string,
+    mode: 'working' | 'staged'
+): Promise<void> {
+    const dirtyDocs = new Set(
+        vscode.workspace.textDocuments
+            .filter((doc) => doc.languageId === 'rust' && doc.isDirty)
+            .map((doc) => doc.uri.toString())
+    );
+
+    await vscode.window.withProgress(
+        {
+            location: vscode.ProgressLocation.Notification,
+            title,
+            cancellable: true
+        },
+        async (progress, token) => {
+            let failed = 0;
+            let processed = 0;
+            let dirtySkipped = 0;
+            const contextCache = new Map<string, RustfmtContext>();
+
+            for (const uri of uris) {
+                if (token.isCancellationRequested) {
+                    break;
+                }
+
+                if (dirtyDocs.has(uri.toString())) {
+                    dirtySkipped += 1;
+                    continue;
+                }
+
+                const label = vscode.workspace.asRelativePath(uri);
+                progress.report({ message: `${processed + 1}/${uris.length}: ${label}` });
+
+                try {
+                    const document = await vscode.workspace.openTextDocument(uri);
+                    const dirKey = path.dirname(document.uri.fsPath);
+                    let resolvedContext = contextCache.get(dirKey);
+                    if (!resolvedContext) {
+                        const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath;
+                        resolvedContext = await formatter.resolveContext(document.uri.fsPath, workspaceFolder);
+                        contextCache.set(dirKey, resolvedContext);
+                    }
+
+                    const edits = await formatDocument(document, token, resolvedContext);
+                    if (edits.length > 0) {
+                        const edit = new vscode.WorkspaceEdit();
+                        edit.set(uri, edits);
+                        const applied = await vscode.workspace.applyEdit(edit);
+                        if (!applied) {
+                            failed += 1;
+                        }
+                    }
+                } catch {
+                    failed += 1;
+                }
+
+                processed += 1;
+            }
+
+            if (token.isCancellationRequested) {
+                vscode.window.showInformationMessage('Formatting canceled.');
+                return;
+            }
+
+            if (failed > 0) {
+                const label = mode === 'staged' ? 'staged' : 'changed';
+                vscode.window.showWarningMessage(`Formatted ${label} Rust files with errors. Check logs for details.`);
+                return;
+            }
+
+            if (dirtySkipped > 0) {
+                vscode.window.showInformationMessage('Formatting complete. Some dirty files were skipped.');
+                return;
+            }
+
+            const label = mode === 'staged' ? 'staged' : 'changed';
+            vscode.window.showInformationMessage(`Formatted ${label} Rust files.`);
+        }
+    );
 }
 
 function updateStatusBar(editor?: vscode.TextEditor | null): void {
@@ -333,198 +549,12 @@ function updateStatusBar(editor?: vscode.TextEditor | null): void {
     }
 
     if (editor?.document.languageId === 'rust') {
+        statusBarItem.text = 'rust-fmt';
+        updateStatusBarTooltip();
         statusBarItem.show();
     } else {
         statusBarItem.hide();
     }
 }
 
-async function maybePromptDefaultFormatter(
-    context: vscode.ExtensionContext,
-    editor?: vscode.TextEditor | null
-): Promise<void> {
-    if (!editor || editor.document.languageId !== 'rust') {
-        return;
-    }
-
-    if (context.globalState.get(DEFAULT_FORMATTER_PROMPT_SUPPRESS_KEY)) {
-        return;
-    }
-
-    const currentDefaultFormatter = getCurrentDefaultFormatter(editor.document);
-    const currentKey = currentDefaultFormatter ?? DEFAULT_FORMATTER_NONE_SENTINEL;
-    let lastObserved = context.workspaceState.get<string>(DEFAULT_FORMATTER_LAST_OBSERVED_KEY);
-    if (ignoreLastObservedOnce) {
-        lastObserved = undefined;
-        ignoreLastObservedOnce = false;
-    }
-
-    if (currentDefaultFormatter === DEFAULT_FORMATTER_ID) {
-        await context.workspaceState.update(DEFAULT_FORMATTER_LAST_OBSERVED_KEY, currentKey);
-        return;
-    }
-
-    if (promptInProgress) {
-        return;
-    }
-
-    if (lastObserved === currentKey) {
-        return;
-    }
-
-    await context.workspaceState.update(DEFAULT_FORMATTER_LAST_OBSERVED_KEY, currentKey);
-    promptInProgress = true;
-
-    try {
-        let message = 'No default formatter is configured for Rust. Switch to rust-fmt?';
-        if (currentDefaultFormatter) {
-            const otherFormatterLabel = resolveFormatterLabel(currentDefaultFormatter);
-            message = otherFormatterLabel
-                ? `Rust is currently formatted by "${otherFormatterLabel}". Switch to rust-fmt?`
-                : 'A different default formatter is set for Rust. Switch to rust-fmt?';
-        }
-
-        const choice = await vscode.window.showInformationMessage(
-            message,
-            'Switch',
-            "Don't ask again"
-        );
-
-        if (choice === 'Switch') {
-            await applyDefaultFormatterSettings(editor.document.uri, context, { askTarget: true });
-        } else if (choice === "Don't ask again") {
-            await context.globalState.update(DEFAULT_FORMATTER_PROMPT_SUPPRESS_KEY, true);
-        }
-    } finally {
-        promptInProgress = false;
-    }
-}
-
-function getCurrentDefaultFormatter(document: vscode.TextDocument): string | undefined {
-    const config = vscode.workspace.getConfiguration('editor', getRustConfigurationScope(document.uri));
-    return config.get<string>('defaultFormatter') || undefined;
-}
-
-function resolveFormatterLabel(extensionId: string): string | undefined {
-    const extension = vscode.extensions.getExtension(extensionId);
-    if (!extension) {
-        return extensionId;
-    }
-
-    const packageJson = extension.packageJSON ?? {};
-    return packageJson.displayName || packageJson.name || extensionId;
-}
-
-async function applyDefaultFormatterSettings(
-    resource?: vscode.Uri,
-    context?: vscode.ExtensionContext,
-    options?: { askTarget?: boolean; target?: vscode.ConfigurationTarget }
-): Promise<void> {
-    const scope = getRustConfigurationScope(resource);
-    const config = vscode.workspace.getConfiguration('editor', scope);
-    let target = options?.target;
-    if (options?.askTarget) {
-        target = await pickConfigurationTarget();
-        if (target === undefined) {
-            return;
-        }
-    }
-    if (target === undefined) {
-        const fallbackTarget = getConfigurationTarget(resource);
-        target = resolveConfigurationTarget(config, fallbackTarget);
-    }
-    try {
-        await config.update('defaultFormatter', DEFAULT_FORMATTER_ID, target, true);
-        await config.update('formatOnSave', true, target, true);
-        if (context) {
-            await context.workspaceState.update(DEFAULT_FORMATTER_LAST_OBSERVED_KEY, DEFAULT_FORMATTER_ID);
-        }
-    } catch (err) {
-        console.error('[rust-fmt] Failed to update formatter settings', err);
-    }
-}
-
-function getConfigurationTarget(resource?: vscode.Uri): vscode.ConfigurationTarget {
-    const folders = vscode.workspace.workspaceFolders;
-    if (!folders || folders.length === 0) {
-        return vscode.ConfigurationTarget.Global;
-    }
-
-    if (resource) {
-        const folder = vscode.workspace.getWorkspaceFolder(resource);
-        if (folder) {
-            return vscode.ConfigurationTarget.WorkspaceFolder;
-        }
-    }
-
-    return vscode.ConfigurationTarget.Workspace;
-}
-
-function resolveConfigurationTarget(
-    config: vscode.WorkspaceConfiguration,
-    fallback: vscode.ConfigurationTarget
-): vscode.ConfigurationTarget {
-    const inspected = config.inspect<string>('defaultFormatter');
-    if (!inspected) {
-        return fallback;
-    }
-
-    if (
-        inspected.workspaceFolderLanguageValue !== undefined ||
-        inspected.workspaceFolderValue !== undefined
-    ) {
-        return vscode.ConfigurationTarget.WorkspaceFolder;
-    }
-
-    if (
-        inspected.workspaceLanguageValue !== undefined ||
-        inspected.workspaceValue !== undefined
-    ) {
-        return vscode.ConfigurationTarget.Workspace;
-    }
-
-    if (
-        inspected.globalLanguageValue !== undefined ||
-        inspected.globalValue !== undefined
-    ) {
-        return vscode.ConfigurationTarget.Global;
-    }
-
-    return fallback;
-}
-
-async function pickConfigurationTarget(): Promise<vscode.ConfigurationTarget | undefined> {
-    const folders = vscode.workspace.workspaceFolders;
-    if (!folders || folders.length === 0) {
-        return vscode.ConfigurationTarget.Global;
-    }
-
-    const selection = await vscode.window.showQuickPick(
-        [
-            { label: 'Global', description: 'Apply to all workspaces' },
-            { label: 'Workspace', description: 'Apply to this workspace only' }
-        ],
-        {
-            placeHolder: 'Set rust-fmt as default formatter for Rust',
-            canPickMany: false
-        }
-    );
-
-    if (!selection) {
-        return undefined;
-    }
-
-    return selection.label === 'Workspace'
-        ? vscode.ConfigurationTarget.Workspace
-        : vscode.ConfigurationTarget.Global;
-}
-
-function getRustConfigurationScope(resource?: vscode.Uri): vscode.ConfigurationScope {
-    if (resource) {
-        return { uri: resource, languageId: 'rust' };
-    }
-
-    return { languageId: 'rust' };
-}
-
-export function deactivate() { }
+export function deactivate(): void { }

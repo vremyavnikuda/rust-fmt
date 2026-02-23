@@ -2,7 +2,13 @@
 
 # rust fmt
 
-Simple VS Code extension for formatting Rust code using `rustfmt`.
+Simple VS Code extension for formatting Rust code with `rustfmt`.
+
+It supports:
+- File formatting (including format on save)
+- Workspace formatting (with `cargo fmt` optimization)
+- Git-aware formatting (`changed` / `staged` Rust files)
+- Quick actions from status bar + Control Center
 
 [Marketplace](https://marketplace.visualstudio.com/items?itemName=vremyavnikuda.rust-fmt)
 
@@ -40,17 +46,30 @@ Add to your `settings.json` and set rust-fmt as the default formatter for Rust:
 
 - `rustfmt.path`: Path to rustfmt executable (default: "rustfmt")
 - `rustfmt.extraArgs`: Additional arguments for rustfmt (default: [])
+- `rustfmt.onboarding.mode`: Onboarding prompt mode (`quiet` or `guided`, default: `quiet`)
 
 ## Usage
 
-**Automatic:** Save any `.rs` file (if `formatOnSave` is enabled).
+Automatic:
+- Save any `.rs` file (when `editor.formatOnSave` is enabled). Rust formatting is applied to the whole file.
 
-**Manual:**
-- Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) -> "Format Document with rustfmt" (current file)
-- Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) -> "Format Workspace with rustfmt" (all Rust files; uses `cargo fmt` when all files are saved)
-- Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) -> "Use rust-fmt as Default Formatter" (prompts for Global or Workspace, then enables format on save)
-- Shortcut: `Shift+Alt+F` (Windows/Linux) or `Shift+Option+F` (Mac) formats the entire workspace when a Rust file is active
-- Status bar: "rust-fmt: active" appears for Rust files; click to format workspace
+Manual commands (Command Palette):
+- `Format Document with rustfmt` - format current Rust file
+- `Format Workspace with rustfmt` - format all Rust files in workspace
+- `Format Changed Rust Files` - format Rust files from `git diff`
+- `Format Staged Rust Files` - format Rust files from `git diff --cached`
+- `rust-fmt: Open Control Center` - open quick action menu
+- `rust-fmt: Open Behavior Controls` - alias to the same Control Center
+- `rust-fmt: Set as Default Formatter` - set rust-fmt as default formatter for Rust
+- `rust-fmt: Open Logs` - open rust-fmt output channel
+
+Shortcut:
+- `Ctrl+Alt+Shift+F` (Windows/Linux) or `Cmd+Option+Shift+F` (Mac) formats the workspace when a Rust file is active.
+
+Status bar:
+- `rust-fmt` item appears for Rust files.
+- Click opens Control Center.
+- Hover shows quick action links (format workspace/changed/staged, logs, reload, etc).
 
 ## How it works
 
@@ -67,4 +86,3 @@ It also:
 ## Troubleshooting
 
 - `rustfmt` not found: install it via `rustup component add rustfmt` or set `rustfmt.path` to the executable.
-

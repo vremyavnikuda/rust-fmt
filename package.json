@@ -50,10 +50,27 @@
           "items": {
             "type": "string"
           }
+        },
+        "rustfmt.onboarding.mode": {
+          "type": "string",
+          "enum": [
+            "quiet",
+            "guided"
+          ],
+          "default": "quiet",
+          "description": "Controls default formatter onboarding prompts. Use 'guided' to enable switch prompts."
         }
       }
     },
     "commands": [
+      {
+        "command": "rust-fmt.controlCenter",
+        "title": "rust-fmt: Open Control Center"
+      },
+      {
+        "command": "rust-fmt.configureBehavior",
+        "title": "rust-fmt: Open Behavior Controls"
+      },
       {
         "command": "rust-fmt.format",
         "title": "Format Document with rustfmt"
@@ -63,15 +80,27 @@
         "title": "Format Workspace with rustfmt"
       },
       {
+        "command": "rust-fmt.formatChanged",
+        "title": "Format Changed Rust Files"
+      },
+      {
+        "command": "rust-fmt.formatStaged",
+        "title": "Format Staged Rust Files"
+      },
+      {
         "command": "rust-fmt.useAsDefaultFormatter",
-        "title": "Use rust-fmt as Default Formatter"
+        "title": "rust-fmt: Set as Default Formatter"
+      },
+      {
+        "command": "rust-fmt.openLogs",
+        "title": "rust-fmt: Open Logs"
       }
     ],
     "keybindings": [
       {
         "command": "rust-fmt.formatWorkspace",
-        "key": "shift+alt+f",
-        "mac": "shift+option+f",
+        "key": "ctrl+alt+shift+f",
+        "mac": "cmd+option+shift+f",
         "when": "editorTextFocus && editorLangId == rust"
       }
     ]

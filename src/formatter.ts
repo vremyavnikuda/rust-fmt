@@ -268,16 +268,21 @@ function hasArg(args: string[], name: string): boolean {
 
 async function resolveRustfmtContext(filePath: string, workspaceFolder?: string): Promise<RustfmtContext> {
     const fileDir = path.dirname(filePath);
-    const cargoTomlPath = await findNearestFile(fileDir, ['Cargo.toml'], workspaceFolder);
+
+    // Phase 1: Three file searches in parallel
+    const [cargoTomlPath, configPath, toolchainPath] = await Promise.all([
+        findNearestFile(fileDir, ['Cargo.toml'], workspaceFolder),
+        findNearestFile(fileDir, ['rustfmt.toml', '.rustfmt.toml'], workspaceFolder),
+        findNearestFile(fileDir, ['rust-toolchain.toml', 'rust-toolchain'], workspaceFolder)
+    ]);
+
+    // Phase 2: Read edition and toolchain in parallel (only if paths found)
+    const [edition, toolchain] = await Promise.all([
+        cargoTomlPath ? readEditionFromCargoToml(cargoTomlPath) : Promise.resolve(undefined),
+        toolchainPath ? readToolchainFromFile(toolchainPath) : Promise.resolve(undefined)
+    ]);
+
     const crateRoot = cargoTomlPath ? path.dirname(cargoTomlPath) : workspaceFolder;
-    const configPath = await findNearestFile(fileDir, ['rustfmt.toml', '.rustfmt.toml'], workspaceFolder);
-    const toolchainPath = await findNearestFile(
-        fileDir,
-        ['rust-toolchain.toml', 'rust-toolchain'],
-        workspaceFolder
-    );
-    const edition = cargoTomlPath ? await readEditionFromCargoToml(cargoTomlPath) : undefined;
-    const toolchain = toolchainPath ? await readToolchainFromFile(toolchainPath) : undefined;
 
     return {
         cwd: crateRoot ?? workspaceFolder ?? fileDir,

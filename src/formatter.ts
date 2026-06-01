@@ -417,7 +417,9 @@ async function readToolchainFromFile(toolchainPath: string): Promise<string | un
 
 
 function normalizeMacroSpacing(text: string): string {
-    // Normalize extra spaces after macro `!` in definitions and invocations.
-    // "macro_rules!   name" -> "macro_rules! name"
-    return text.replace(/([a-zA-Z_]\w*!)\s{2,}(\S)/g, '$1 $2');
+    // Collapse extra spaces after `!(`, `![`, `!{` in macro invocations.
+    let result = text.replace(/(\w![(\[{])\s{2,}/g, '$1');
+    // Collapse multiple spaces between `!` and macro name to one space.
+    result = result.replace(/([a-zA-Z_]\w*!)\s{2,}(\S)/g, '$1 $2');
+    return result;
 }

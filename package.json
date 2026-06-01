@@ -109,14 +109,6 @@
         "command": "rust-fmt.openLogs",
         "title": "rust-fmt: Open Logs"
       }
-    ],
-    "keybindings": [
-      {
-        "command": "rust-fmt.formatWorkspace",
-        "key": "ctrl+alt+shift+f",
-        "mac": "cmd+option+shift+f",
-        "when": "editorTextFocus && editorLangId == rust"
-      }
     ]
   },
   "scripts": {

@@ -26,8 +26,12 @@ let outputChannel: vscode.OutputChannel | undefined;
 const CONTROL_CENTER_COMMAND = 'rust-fmt.controlCenter';
 const CONFIGURE_BEHAVIOR_COMMAND = 'rust-fmt.configureBehavior';
 const OPEN_LOGS_COMMAND = 'rust-fmt.openLogs';
+const MACRO_PROMPT_SUPPRESS_KEY = 'rustfmt.macroPromptSuppressed';
+let extContext: vscode.ExtensionContext;
+let macroPromptInProgress = false;
 
 export function activate(context: vscode.ExtensionContext): void {
+    extContext = context;
     console.log('[rust-fmt] Extension activated');
     outputChannel = vscode.window.createOutputChannel('rust-fmt');
     writeLog('Extension activated');
@@ -406,6 +410,10 @@ async function performFormat(
         return [];
     }
 
+    if (originalText.includes('macro_rules!')) {
+        void maybePromptMacroFormatting();
+    }
+
     // Clear any pending status bar reset
     if (statusBarTimer) {
         clearTimeout(statusBarTimer);
@@ -489,6 +497,42 @@ function resetStatusBar(): void {
 
     statusBarItem.text = BASE_STATUS_TEXT;
     statusBarItem.tooltip = BASE_STATUS_TOOLTIP;
+}
+
+async function maybePromptMacroFormatting(): Promise<void> {
+    if (macroPromptInProgress) {
+        return;
+    }
+
+    if (extContext.globalState.get(MACRO_PROMPT_SUPPRESS_KEY)) {
+        return;
+    }
+
+    const config = getRustfmtConfiguration();
+    if (config.get<boolean>('formatMacroBodies')) {
+        return;
+    }
+
+    macroPromptInProgress = true;
+
+    try {
+        const choice = await vscode.window.showInformationMessage(
+            'Rust macros detected. Enable nightly macro formatting for better results?',
+            'Enable',
+            "Don't ask again"
+        );
+
+        if (choice === 'Enable') {
+            await config.update('formatMacroBodies', true, vscode.ConfigurationTarget.Workspace);
+            await config.update('formatMacroMatchers', true, vscode.ConfigurationTarget.Workspace);
+            formatter.updateConfig(getFormatterConfig());
+            vscode.window.showInformationMessage('Macro formatting enabled. Please save the file again to format macros.');
+        } else if (choice === "Don't ask again") {
+            await extContext.globalState.update(MACRO_PROMPT_SUPPRESS_KEY, true);
+        }
+    } finally {
+        macroPromptInProgress = false;
+    }
 }
 
 function getFormatterConfig(resource?: vscode.Uri): FormatterConfig {

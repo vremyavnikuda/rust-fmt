@@ -19,6 +19,9 @@ let formatter: RustFormatter;
 const activeFormats = new Map<string, { tokenSource: vscode.CancellationTokenSource; promise: Promise<vscode.TextEdit[]> }>();
 const MAX_FILE_SIZE_MB = 2;
 let statusBarItem: vscode.StatusBarItem;
+let statusBarTimer: ReturnType<typeof setTimeout> | undefined;
+const BASE_STATUS_TEXT = 'rust-fmt: active';
+const BASE_STATUS_TOOLTIP = 'rust-fmt is active. Click to format workspace.';
 let outputChannel: vscode.OutputChannel | undefined;
 const CONTROL_CENTER_COMMAND = 'rust-fmt.controlCenter';
 const CONFIGURE_BEHAVIOR_COMMAND = 'rust-fmt.configureBehavior';
@@ -348,31 +351,89 @@ async function performFormat(
         return [];
     }
 
-    const formattedText = resolvedContext
-        ? await formatter.formatWithContext(originalText, resolvedContext, token)
-        : await formatter.format(document, token, originalText);
-
-    if (token.isCancellationRequested) {
-        return [];
+    // Clear any pending status bar reset
+    if (statusBarTimer) {
+        clearTimeout(statusBarTimer);
+        statusBarTimer = undefined;
     }
 
-    if (formattedText === null || formattedText.trim() === '') {
-        console.log('[rust-fmt] No formatted text returned');
-        return [];
+    // Show formatting indicator
+    if (statusBarItem && document.languageId === 'rust') {
+        statusBarItem.text = '$(loading~spin) rust-fmt';
     }
 
-    if (formattedText === originalText) {
-        console.log('[rust-fmt] No changes needed');
+    const startTime = Date.now();
+
+    try {
+        const formattedText = resolvedContext
+            ? await formatter.formatWithContext(originalText, resolvedContext, token)
+            : await formatter.format(document, token, originalText);
+
+        if (token.isCancellationRequested) {
+            resetStatusBar();
+            return [];
+        }
+
+        const elapsed = Date.now() - startTime;
+
+        if (formattedText === null || formattedText.trim() === '') {
+            console.log('[rust-fmt] No formatted text returned');
+            showStatusBarTime(false, elapsed);
+            return [];
+        }
+
+        if (formattedText === originalText) {
+            console.log('[rust-fmt] No changes needed');
+            showStatusBarTime(true, elapsed);
+            return [];
+        }
+
+        const fullRange = new vscode.Range(
+            document.positionAt(0),
+            document.positionAt(originalText.length)
+        );
+
+        console.log('[rust-fmt] Applying formatting changes');
+        showStatusBarTime(true, elapsed);
+        return [vscode.TextEdit.replace(fullRange, formattedText)];
+    } catch {
+        const elapsed = Date.now() - startTime;
+        showStatusBarTime(false, elapsed);
         return [];
     }
+}
 
-    const fullRange = new vscode.Range(
-        document.positionAt(0),
-        document.positionAt(originalText.length)
-    );
+function showStatusBarTime(success: boolean, elapsedMs: number): void {
+    if (!statusBarItem) {
+        return;
+    }
 
-    console.log('[rust-fmt] Applying formatting changes');
-    return [vscode.TextEdit.replace(fullRange, formattedText)];
+    if (success) {
+        statusBarItem.text = `rust-fmt: ✓ ${elapsedMs}ms`;
+        statusBarItem.tooltip = `Last format: ${elapsedMs}ms. Click to format workspace.`;
+    } else {
+        statusBarItem.text = 'rust-fmt: ✗';
+        statusBarItem.tooltip = 'Formatting failed. Click to format workspace.';
+    }
+
+    // Reset after 3 seconds
+    statusBarTimer = setTimeout(() => {
+        resetStatusBar();
+    }, 3000);
+}
+
+function resetStatusBar(): void {
+    if (statusBarTimer) {
+        clearTimeout(statusBarTimer);
+        statusBarTimer = undefined;
+    }
+
+    if (!statusBarItem) {
+        return;
+    }
+
+    statusBarItem.text = BASE_STATUS_TEXT;
+    statusBarItem.tooltip = BASE_STATUS_TOOLTIP;
 }
 
 function getFormatterConfig(resource?: vscode.Uri): FormatterConfig {

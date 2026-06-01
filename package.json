@@ -59,6 +59,16 @@
           ],
           "default": "quiet",
           "description": "Controls default formatter onboarding prompts. Use 'guided' to enable switch prompts."
+        },
+        "rustfmt.formatMacroBodies": {
+          "type": "boolean",
+          "default": false,
+          "description": "Pass format_macro_bodies=true to rustfmt (requires nightly toolchain)."
+        },
+        "rustfmt.formatMacroMatchers": {
+          "type": "boolean",
+          "default": false,
+          "description": "Pass format_macro_matchers=true to rustfmt (requires nightly toolchain)."
         }
       }
     },

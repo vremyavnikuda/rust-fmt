@@ -496,7 +496,9 @@ function getFormatterConfig(resource?: vscode.Uri): FormatterConfig {
 
     return {
         rustfmtPath: config.get<string>('path') || 'rustfmt',
-        extraArgs: config.get<string[]>('extraArgs') || []
+        extraArgs: config.get<string[]>('extraArgs') || [],
+        formatMacroBodies: config.get<boolean>('formatMacroBodies') || false,
+        formatMacroMatchers: config.get<boolean>('formatMacroMatchers') || false
     };
 }
 

@@ -6,6 +6,8 @@ import * as vscode from 'vscode';
 export interface FormatterConfig {
     rustfmtPath: string;
     extraArgs: string[];
+    formatMacroBodies?: boolean;
+    formatMacroMatchers?: boolean;
 }
 
 export interface RustfmtContext {
@@ -104,7 +106,7 @@ export class RustFormatter {
         }
 
         return new Promise((resolve) => {
-            const args = [...buildRustfmtArgs(this.config.extraArgs, context), ...additionalArgs];
+            const args = [...buildRustfmtArgs(this.config, context), ...additionalArgs];
             console.log(`[rust-fmt] Running: ${this.config.rustfmtPath} ${args.join(' ')}`);
 
             const env = { ...process.env };
@@ -190,7 +192,8 @@ export class RustFormatter {
                 return;
             }
 
-            rustfmt.stdin.write(text);
+            const normalizedText = normalizeMacroSpacing(text);
+            rustfmt.stdin.write(normalizedText);
             rustfmt.stdin.end();
         });
     }
@@ -287,9 +290,9 @@ export class RustFormatter {
     }
 }
 
-function buildRustfmtArgs(extraArgs: string[], context: RustfmtContext): string[] {
+function buildRustfmtArgs(config: FormatterConfig, context: RustfmtContext): string[] {
     const args: string[] = ['--emit', 'stdout'];
-    const normalizedExtraArgs = extraArgs ?? [];
+    const normalizedExtraArgs = config.extraArgs ?? [];
     const hasArg = (name: string): boolean =>
         normalizedExtraArgs.some((arg) => arg === name || arg.startsWith(`${name}=`));
 
@@ -299,6 +302,14 @@ function buildRustfmtArgs(extraArgs: string[], context: RustfmtContext): string[
 
     if (context.edition && !hasArg('--edition')) {
         args.push('--edition', context.edition);
+    }
+
+    if (config.formatMacroBodies) {
+        args.push('--config', 'format_macro_bodies=true');
+    }
+
+    if (config.formatMacroMatchers) {
+        args.push('--config', 'format_macro_matchers=true');
     }
 
     args.push(...normalizedExtraArgs);
@@ -404,3 +415,9 @@ async function readToolchainFromFile(toolchainPath: string): Promise<string | un
 }
 
 
+
+function normalizeMacroSpacing(text: string): string {
+    // Normalize extra spaces after macro `!` in definitions and invocations.
+    // "macro_rules!   name" -> "macro_rules! name"
+    return text.replace(/([a-zA-Z_]\w*!)\s{2,}(\S)/g, '$1 $2');
+}

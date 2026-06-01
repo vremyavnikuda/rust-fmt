@@ -8,3 +8,7 @@ test-rs/**
 .gitignore
 package-lock.json
 tsconfig.json
+.codewhale/**
+docs/**
+out/test/**
+assets/*.svg

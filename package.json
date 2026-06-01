@@ -8,7 +8,7 @@
     "type": "git",
     "url": "https://github.com/shikoucore/rust-fmt.git"
   },
-  "icon": "assets/icon_rust_fmt.png",
+  "icon": "assets/rust_fmt_icon.png",
   "engines": {
     "vscode": "^1.108.0"
   },

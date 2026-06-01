@@ -1,4 +1,6 @@
-![rust-fmt banner](assets/baner.png)
+<div align="center">
+  <img src="assets/rust_fmt_logo.png" alt="rust fmt logo" width="680">
+</div>
 
 # rust fmt
 

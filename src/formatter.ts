@@ -193,7 +193,8 @@ export class RustFormatter {
             }
 
             const normalizedText = normalizeMacroSpacing(text);
-            rustfmt.stdin.write(normalizedText);
+            const finalText = text.includes('macro_rules!') ? normalizeMacroBodies(normalizedText) : normalizedText;
+            rustfmt.stdin.write(finalText);
             rustfmt.stdin.end();
         });
     }
@@ -416,10 +417,132 @@ async function readToolchainFromFile(toolchainPath: string): Promise<string | un
 
 
 
-function normalizeMacroSpacing(text: string): string {
-    // Collapse extra spaces after `!(`, `![`, `!{` in macro invocations.
-    let result = text.replace(/(\w![(\[{])\s{2,}/g, '$1');
-    // Collapse multiple spaces between `!` and macro name to one space.
-    result = result.replace(/([a-zA-Z_]\w*!)\s{2,}(\S)/g, '$1 $2');
+export function normalizeMacroSpacing(text: string): string {
+    let result = text.replace(/(\w+![[({]) {2,}/g, '$1');
+    result = result.replace(/([a-zA-Z_]\w*!) {2,}(\S)/g, '$1 $2');
+    result = result.replace(/(\S) {2,}([[({])/g, '$1 $2');
     return result;
+}
+
+export function normalizeMacroBodies(text: string): string {
+    const lines = text.split('\n');
+    const result = [...lines];
+
+    let i = 0;
+    while (i < lines.length) {
+        const line = lines[i];
+        if (!/^\s*macro_rules!\s/.test(line)) { i++; continue; }
+
+        let depth = 0;
+        let end = i;
+        for (let j = i; j < lines.length; j++) {
+            depth += countChar(lines[j], '{') - countChar(lines[j], '}');
+            if (depth === 0 && j > i) { end = j; break; }
+        }
+
+        const macroText = lines.slice(i, end + 1).join('\n');
+
+        let armNestDepth = 0;
+        let armLineStart = -1;
+        let armLines: string[] = [];
+        let armBodyLineStart = -1;
+        let armLineIndent = 0;
+        let currentLineIdx = 0;
+
+        for (let pos = 0; pos < macroText.length; pos++) {
+            const ch = macroText[pos];
+
+            if (ch === '\n') {
+                currentLineIdx++;
+                if (armNestDepth > 0 && currentLineIdx !== armLineStart) {
+                    armLines.push(lines[i + currentLineIdx]);
+                }
+                continue;
+            }
+
+            if (armNestDepth > 0) {
+                if (ch === '{') {
+                    armNestDepth++;
+                } else if (ch === '}') {
+                    armNestDepth--;
+                    if (armNestDepth === 0) {
+                        if (armLines.length === 0 || armLines[armLines.length - 1] !== lines[i + currentLineIdx]) {
+                            armLines.push(lines[i + currentLineIdx]);
+                        }
+
+                        const bodyLines = armLines.slice(1);
+                        const innerCount = bodyLines.length - 1;
+                        const expectedIndent = armLineIndent + 4;
+
+                        if (innerCount >= 1) {
+                            let nestLevel = 0;
+                            for (let bi = 0; bi < innerCount; bi++) {
+                                const bl = bodyLines[bi];
+                                const bt = bl.trimStart();
+                                if (bt.length === 0) { continue; }
+
+                                // Pre-indent: close repetition and braces first
+                                if (/\)[+*]/.test(bt)) {
+                                    nestLevel = Math.max(0, nestLevel - 1);
+                                }
+                                nestLevel = Math.max(0, nestLevel - countChar(bt, '}'));
+
+                                // Compute indent
+                                const newIndent = expectedIndent + nestLevel * 4;
+
+                                // Post-indent: open braces and repetition
+                                nestLevel += countChar(bt, '{');
+                                if (/^\$\(/.test(bt)) {
+                                    nestLevel++;
+                                }
+
+                                const resultIdx = i + armBodyLineStart + bi;
+                                if (resultIdx < result.length) {
+                                    const oldIndent = bl.length - bt.length;
+                                    if (newIndent !== oldIndent) {
+                                        result[resultIdx] = ' '.repeat(newIndent) + bt;
+                                    }
+                                }
+                            }
+                        }
+
+                        armNestDepth = 0;
+                        armLines = [];
+                        armBodyLineStart = -1;
+                    }
+                }
+                continue;
+            }
+
+            if (ch === '=' && pos + 1 < macroText.length && macroText[pos + 1] === '>') {
+                let scanPos = pos + 2;
+                while (scanPos < macroText.length && (macroText[scanPos] === ' ' || macroText[scanPos] === '\t' || macroText[scanPos] === '\n')) {
+                    if (macroText[scanPos] === '\n') { currentLineIdx++; }
+                    scanPos++;
+                }
+                if (scanPos < macroText.length && macroText[scanPos] === '{') {
+                    armNestDepth = 1;
+                    armLineStart = currentLineIdx;
+                    armLines = [lines[i + currentLineIdx]];
+                    armBodyLineStart = currentLineIdx + 1;
+                    const armLine = lines[i + currentLineIdx];
+                    armLineIndent = armLine.length - armLine.trimStart().length;
+                    pos = scanPos;
+                    continue;
+                }
+            }
+        }
+
+        i = end + 1;
+    }
+
+    return result.join('\n');
+}
+
+function countChar(s: string, ch: string): number {
+    let c = 0;
+    for (let idx = 0; idx < s.length; idx++) {
+        if (s[idx] === ch) { c++; }
+    }
+    return c;
 }

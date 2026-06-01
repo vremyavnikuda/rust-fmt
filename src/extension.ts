@@ -10,7 +10,6 @@ import {
     maybePromptDefaultFormatter
 } from './defaultFormatter';
 import {
-    buildStatusBarTooltip,
     ControlCenterActionId,
     pickControlCenterAction
 } from './controlCenter';
@@ -21,7 +20,6 @@ const activeFormats = new Map<string, { tokenSource: vscode.CancellationTokenSou
 const MAX_FILE_SIZE_MB = 2;
 let statusBarItem: vscode.StatusBarItem;
 let outputChannel: vscode.OutputChannel | undefined;
-let extensionVersion = 'unknown';
 const CONTROL_CENTER_COMMAND = 'rust-fmt.controlCenter';
 const CONFIGURE_BEHAVIOR_COMMAND = 'rust-fmt.configureBehavior';
 const OPEN_LOGS_COMMAND = 'rust-fmt.openLogs';
@@ -29,7 +27,6 @@ const OPEN_LOGS_COMMAND = 'rust-fmt.openLogs';
 export function activate(context: vscode.ExtensionContext): void {
     console.log('[rust-fmt] Extension activated');
     outputChannel = vscode.window.createOutputChannel('rust-fmt');
-    extensionVersion = context.extension.packageJSON?.version ?? 'unknown';
     writeLog('Extension activated');
 
     initializeDefaultFormatterPromptState(context);
@@ -254,9 +251,23 @@ export function activate(context: vscode.ExtensionContext): void {
         }
     });
 
+    const fileSaveListener = vscode.workspace.onDidSaveTextDocument((document) => {
+        const fileName = path.basename(document.fileName);
+        if (
+            fileName === 'Cargo.toml' ||
+            fileName === 'rustfmt.toml' ||
+            fileName === '.rustfmt.toml' ||
+            fileName === 'rust-toolchain' ||
+            fileName === 'rust-toolchain.toml'
+        ) {
+            formatter.clearContextCache();
+            writeLog('Context cache cleared due to config file change');
+        }
+    });
+
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-    updateStatusBarTooltip();
-    statusBarItem.command = CONTROL_CENTER_COMMAND;
+    statusBarItem.tooltip = 'rust-fmt is active. Click to format workspace.';
+    statusBarItem.command = 'rust-fmt.formatWorkspace';
 
     const editorListener = vscode.window.onDidChangeActiveTextEditor((editor) => {
         updateStatusBar(editor);
@@ -276,6 +287,7 @@ export function activate(context: vscode.ExtensionContext): void {
         formatStagedCommand,
         useAsDefaultFormatterCommand,
         configListener,
+        fileSaveListener,
         editorListener,
         statusBarItem,
         outputChannel
@@ -443,22 +455,6 @@ function writeLog(message: string): void {
     outputChannel?.appendLine(line);
 }
 
-function updateStatusBarTooltip(): void {
-    if (!statusBarItem) {
-        return;
-    }
-
-    statusBarItem.tooltip = buildStatusBarTooltip(extensionVersion, {
-        openLogs: OPEN_LOGS_COMMAND,
-        openControlCenter: CONTROL_CENTER_COMMAND,
-        formatWorkspace: 'rust-fmt.formatWorkspace',
-        formatChanged: 'rust-fmt.formatChanged',
-        formatStaged: 'rust-fmt.formatStaged',
-        setDefaultFormatter: DEFAULT_FORMATTER_COMMAND,
-        reloadWorkspace: 'workbench.action.reloadWindow'
-    });
-}
-
 async function formatSelectedUris(
     uris: vscode.Uri[],
     title: string,
@@ -549,8 +545,7 @@ function updateStatusBar(editor?: vscode.TextEditor | null): void {
     }
 
     if (editor?.document.languageId === 'rust') {
-        statusBarItem.text = 'rust-fmt';
-        updateStatusBarTooltip();
+        statusBarItem.text = 'rust-fmt: active';
         statusBarItem.show();
     } else {
         statusBarItem.hide();

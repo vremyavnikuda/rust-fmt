@@ -18,6 +18,7 @@ export interface RustfmtContext {
 
 export class RustFormatter {
     private config: FormatterConfig;
+    private contextCache = new Map<string, { ctx: RustfmtContext; mtime: number }>();
 
     constructor(config: FormatterConfig) {
         this.config = config;
@@ -30,8 +31,22 @@ export class RustFormatter {
     ): Promise<string | null> {
         const text = textOverride ?? document.getText();
         const filePath = document.uri.fsPath;
+        const fileDir = path.dirname(filePath);
         const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath;
-        const context = await this.resolveContext(filePath, workspaceFolder);
+
+        let context: RustfmtContext;
+        try {
+            const stat = await fs.promises.stat(fileDir);
+            const cached = this.contextCache.get(filePath);
+            if (cached && cached.mtime === stat.mtimeMs) {
+                context = cached.ctx;
+            } else {
+                context = await this.resolveContext(filePath, workspaceFolder);
+                this.contextCache.set(filePath, { ctx: context, mtime: stat.mtimeMs });
+            }
+        } catch {
+            context = await this.resolveContext(filePath, workspaceFolder);
+        }
 
         return this.formatWithRustfmt(text, context, token);
     }
@@ -161,6 +176,11 @@ export class RustFormatter {
 
     public updateConfig(config: FormatterConfig): void {
         this.config = config;
+        this.contextCache.clear();
+    }
+
+    public clearContextCache(): void {
+        this.contextCache.clear();
     }
 
     private async runCargoFmt(

@@ -72,6 +72,10 @@
         "title": "rust-fmt: Open Behavior Controls"
       },
       {
+        "command": "rust-fmt.formatSelection",
+        "title": "Format Selection with rustfmt"
+      },
+      {
         "command": "rust-fmt.format",
         "title": "Format Document with rustfmt"
       },

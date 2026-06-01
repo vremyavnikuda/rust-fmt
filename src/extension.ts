@@ -48,6 +48,59 @@ export function activate(context: vscode.ExtensionContext): void {
         }
     });
 
+    const rangeFormattingProvider = vscode.languages.registerDocumentRangeFormattingEditProvider('rust', {
+        async provideDocumentRangeFormattingEdits(
+            document: vscode.TextDocument,
+            range: vscode.Range,
+            _options: vscode.FormattingOptions,
+            token: vscode.CancellationToken
+        ): Promise<vscode.TextEdit[]> {
+            console.log(`[rust-fmt] Formatting range: lines ${range.start.line + 1}-${range.end.line + 1}`);
+
+            if (token.isCancellationRequested) {
+                return [];
+            }
+
+            const originalText = document.getText();
+            const formattedText = await formatter.formatRange(document, range, token);
+
+            if (!formattedText || formattedText === originalText) {
+                return [];
+            }
+
+            const fullRange = new vscode.Range(
+                document.positionAt(0),
+                document.positionAt(originalText.length)
+            );
+            return [vscode.TextEdit.replace(fullRange, formattedText)];
+        }
+    });
+
+    const formatSelectionCommand = vscode.commands.registerCommand('rust-fmt.formatSelection', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor || editor.document.languageId !== 'rust') {
+            vscode.window.showWarningMessage('No active Rust file to format');
+            return;
+        }
+
+        if (editor.selection.isEmpty) {
+            vscode.window.showInformationMessage('Select a range of text to format, then run Format Selection.');
+            return;
+        }
+
+        const edits = await vscode.commands.executeCommand<vscode.TextEdit[]>(
+            'vscode.executeDocumentRangeFormatProvider',
+            editor.document.uri,
+            editor.selection
+        );
+
+        if (edits && edits.length > 0) {
+            const edit = new vscode.WorkspaceEdit();
+            edit.set(editor.document.uri, edits);
+            await vscode.workspace.applyEdit(edit);
+        }
+    });
+
     const formatCommand = vscode.commands.registerCommand('rust-fmt.format', async () => {
         const editor = vscode.window.activeTextEditor;
         if (!editor || editor.document.languageId !== 'rust') {
@@ -281,6 +334,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
     context.subscriptions.push(
         formattingProvider,
+        rangeFormattingProvider,
+        formatSelectionCommand,
         controlCenterCommand,
         configureBehaviorCommand,
         openLogsCommand,

@@ -59,6 +59,26 @@ export class RustFormatter {
         return this.formatWithRustfmt(text, context, token);
     }
 
+    public async formatRange(
+        document: vscode.TextDocument,
+        range: vscode.Range,
+        token?: vscode.CancellationToken
+    ): Promise<string | null> {
+        const text = document.getText();
+        const filePath = document.uri.fsPath;
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath;
+        const context = await this.resolveContext(filePath, workspaceFolder);
+
+        // rustfmt uses 1-based line numbers
+        const startLine = range.start.line + 1;
+        const endLine = range.end.line + 1;
+
+        const fileLines = JSON.stringify([{ file: 'stdin', range: [startLine, endLine] }]);
+        const additionalArgs = ['--file-lines', fileLines];
+
+        return this.formatWithRustfmt(text, context, token, additionalArgs);
+    }
+
     public async resolveContext(filePath: string, workspaceFolder?: string): Promise<RustfmtContext> {
         return resolveRustfmtContext(filePath, workspaceFolder);
     }
@@ -74,16 +94,17 @@ export class RustFormatter {
     private async formatWithRustfmt(
         text: string,
         context: RustfmtContext,
-        token?: vscode.CancellationToken
+        token?: vscode.CancellationToken,
+        additionalArgs: string[] = []
     ): Promise<string | null> {
         console.log(`[rust-fmt] Formatting with rustfmt at: ${this.config.rustfmtPath}`);
 
         if (token?.isCancellationRequested) {
             return null;
         }
-        
+
         return new Promise((resolve) => {
-            const args = buildRustfmtArgs(this.config.extraArgs, context);
+            const args = [...buildRustfmtArgs(this.config.extraArgs, context), ...additionalArgs];
             console.log(`[rust-fmt] Running: ${this.config.rustfmtPath} ${args.join(' ')}`);
 
             const env = { ...process.env };

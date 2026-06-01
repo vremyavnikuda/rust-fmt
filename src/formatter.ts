@@ -290,12 +290,14 @@ export class RustFormatter {
 function buildRustfmtArgs(extraArgs: string[], context: RustfmtContext): string[] {
     const args: string[] = ['--emit', 'stdout'];
     const normalizedExtraArgs = extraArgs ?? [];
+    const hasArg = (name: string): boolean =>
+        normalizedExtraArgs.some((arg) => arg === name || arg.startsWith(`${name}=`));
 
-    if (context.configPath && !hasArg(normalizedExtraArgs, '--config-path')) {
+    if (context.configPath && !hasArg('--config-path')) {
         args.push('--config-path', context.configPath);
     }
 
-    if (context.edition && !hasArg(normalizedExtraArgs, '--edition')) {
+    if (context.edition && !hasArg('--edition')) {
         args.push('--edition', context.edition);
     }
 
@@ -303,21 +305,15 @@ function buildRustfmtArgs(extraArgs: string[], context: RustfmtContext): string[
     return args;
 }
 
-function hasArg(args: string[], name: string): boolean {
-    return args.some((arg) => arg === name || arg.startsWith(`${name}=`));
-}
-
 async function resolveRustfmtContext(filePath: string, workspaceFolder?: string): Promise<RustfmtContext> {
     const fileDir = path.dirname(filePath);
 
-    // Phase 1: Three file searches in parallel
     const [cargoTomlPath, configPath, toolchainPath] = await Promise.all([
         findNearestFile(fileDir, ['Cargo.toml'], workspaceFolder),
         findNearestFile(fileDir, ['rustfmt.toml', '.rustfmt.toml'], workspaceFolder),
         findNearestFile(fileDir, ['rust-toolchain.toml', 'rust-toolchain'], workspaceFolder)
     ]);
 
-    // Phase 2: Read edition and toolchain in parallel (only if paths found)
     const [edition, toolchain] = await Promise.all([
         cargoTomlPath ? readEditionFromCargoToml(cargoTomlPath) : Promise.resolve(undefined),
         toolchainPath ? readToolchainFromFile(toolchainPath) : Promise.resolve(undefined)
@@ -341,7 +337,9 @@ async function findNearestFile(
 ): Promise<string | null> {
     let current = path.resolve(startDir);
     const stop = stopDir ? path.resolve(stopDir) : undefined;
-    const stopNormalized = stop ? normalizePath(stop) : undefined;
+    const stopNormalized = stop
+        ? (process.platform === 'win32' ? stop.toLowerCase() : stop)
+        : undefined;
 
     let done = false;
     while (!done) {
@@ -355,7 +353,8 @@ async function findNearestFile(
             }
         }
 
-        if (stopNormalized && normalizePath(current) === stopNormalized) {
+        const currentKey = process.platform === 'win32' ? current.toLowerCase() : current;
+        if (stopNormalized && currentKey === stopNormalized) {
             done = true;
             continue;
         }
@@ -404,6 +403,4 @@ async function readToolchainFromFile(toolchainPath: string): Promise<string | un
     }
 }
 
-function normalizePath(value: string): string {
-    return process.platform === 'win32' ? value.toLowerCase() : value;
-}
+

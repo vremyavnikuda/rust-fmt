@@ -507,10 +507,7 @@ async function openControlCenter(context: vscode.ExtensionContext): Promise<void
         return;
     }
 
-    const keepOpen = await runControlCenterAction(action, context);
-    if (keepOpen) {
-        await openControlCenter(context);
-    }
+    await runControlCenterAction(action, context);
 }
 
 async function runControlCenterAction(action: ControlCenterActionId, context: vscode.ExtensionContext): Promise<boolean> {
@@ -661,7 +658,7 @@ function updateStatusBar(editor?: vscode.TextEditor | null): void {
     }
 
     if (editor?.document.languageId === 'rust') {
-        statusBarItem.text = 'rust-fmt: active';
+        statusBarItem.text = BASE_STATUS_TEXT;
         statusBarItem.show();
     } else {
         statusBarItem.hide();

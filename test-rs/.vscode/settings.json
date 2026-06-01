@@ -1,0 +1,4 @@
+{
+    "rustfmt.formatMacroBodies": true,
+    "rustfmt.formatMacroMatchers": true
+}

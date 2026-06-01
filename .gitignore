@@ -3,5 +3,4 @@ out
 *.vsix
 img
 test-rs/target
-test-rs
 todo.md

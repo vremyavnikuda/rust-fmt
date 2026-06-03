@@ -32,8 +32,8 @@ macro_rules! recursive_macro {
 }
 
 macro_rules! vec_of_strings {
-        ( $( $x:expr ),* ) => {
-        vec![ $( $x.to_string() ),* ]
+    ($($x:expr),*) => {
+        vec![$($x.to_string()),*]
     };
 }
 
@@ -83,11 +83,11 @@ pub fn use_nested() {
 }
 
 macro_rules! complex_pattern {
-    ( @inner $a:ident : $b:expr ) => {
-            let $a = $b;
+    (@inner $a:ident : $b:expr) => {
+        let $a = $b;
     };
-    ( $name:ident { $( $field:ident : $value:expr ),+ $(,)? } ) => {
-            let $name = ( $( $value ),+ );
+    ($name:ident{$($field:ident : $value:expr),+ $(,)?}) => {
+        let $name = ($($value),+);
     };
 }
 
@@ -98,13 +98,8 @@ pub fn use_complex_pattern() {
 }
 
 macro_rules! huge_macro {
-    (
-        $( #[$attr:meta] )*
-        $vis:vis fn $name:ident ( $( $arg:ident : $ty:ty ),* $(,)? ) -> $ret:ty
-        $body:block
-    ) => {
-            $( #[$attr] )*
-        $vis fn $name( $( $arg: $ty ),* ) -> $ret $body
+    ($(#[$attr:meta])* $vis:vis fn $name:ident($($arg:ident : $ty:ty),* $(,)?) -> $ret:ty $body:block) => {
+        $(#[$attr])* $vis fn $name($($arg: $ty),*) -> $ret $body
     };
 }
 
@@ -120,8 +115,8 @@ pub fn use_multi_line() {
 }
 
 macro_rules! token_tree_macro {
-    ($($tt:tt)* ) => {
-            vec![ $( stringify!($tt) ),* ]
+    ($($tt:tt)*) => {
+        vec![$(stringify!($tt)),*]
     };
 }
 
@@ -131,8 +126,12 @@ pub fn use_token_tree() {
 }
 
 macro_rules! count_exprs {
-    () => { 0usize };
-    ( $head:expr $(, $tail:expr )* ) => { 1usize + count_exprs!( $( $tail ),* ) };
+    () => {
+        0usize
+    };
+    ($head:expr $(, $tail:expr)*) => {
+        1usize + count_exprs!($($tail),*)
+    };
 }
 
 pub fn use_count() {
@@ -141,11 +140,11 @@ pub fn use_count() {
 }
 
 macro_rules! field_accessor {
-    ( $struct_name:ident, $( $field:ident : $ty:ty ),+ ) => {
-            impl $struct_name {
+    ($struct_name:ident, $($field:ident : $ty:ty),+) => {
+        impl $struct_name {
             $(
-                pub fn $field( &self) -> &$ty {
-                        &self.$field
+                pub fn $field(&self) -> &$ty {
+                    &self.$field
                 }
             )+
         }
@@ -172,8 +171,8 @@ pub fn use_accessors(data: &DataFields) {
 }
 
 macro_rules! format_madness {
-    ($fmt:expr, $( $arg:expr ),+ $(,)?) => {
-            format!( $fmt, $( $arg ),+ )
+    ($fmt:expr, $($arg:expr),+ $(,)?) => {
+        format!($fmt, $($arg),+)
     };
 }
 
@@ -208,18 +207,20 @@ pub fn use_tt_recurse() {
 }
 
 macro_rules! define_enum {
-    ( $name:ident { $( $variant:ident $( ( $($field:ty),* ) )? ),+ $(,)? } ) => {
-            pub enum $name {
-            $( $variant $( ( $($field),* ) )?, )+
+    ($name:ident{$($variant:ident $(($($field:ty),*))?),+ $(,)?}) => {
+        pub enum $name {
+            $($variant $(($($field),*))?,)+
         }
     };
 }
 
-define_enum!(MyGeneratedEnum  {
-    Alpha,
-       Beta(i32),
-    Gamma(String, i32),
-} );
+define_enum!(
+    MyGeneratedEnum  {
+        Alpha,
+        Beta(i32),
+        Gamma(String, i32),
+    }
+);
 
 pub fn use_generated_enum(val: MyGeneratedEnum) {
     match val {
@@ -230,22 +231,22 @@ pub fn use_generated_enum(val: MyGeneratedEnum) {
 }
 
 macro_rules! run_length_encode {
-    ( $( $x:expr ),* ) => {{
-            let mut result = Vec::new();
-        let mut iter = [ $( $x ),* ].into_iter();
-            let last_val = iter.next();
+    ($($x:expr),*) => {{
+        let mut result = Vec::new();
+        let mut iter = [$($x),*].into_iter();
+        let last_val = iter.next();
         if let Some(mut last) = last_val {
             let mut count = 1usize;
-                for item in iter {
+            for item in iter {
                 if item == last {
-                        count += 1;
+                    count += 1;
                 } else {
-                        result.push((last, count));
+                    result.push((last, count));
                     last = item;
-                        count = 1;
+                    count = 1;
                 }
             }
-                result.push((last, count));
+            result.push((last, count));
         }
         result
     }};
@@ -264,7 +265,7 @@ pub fn builtin_macro_mess() {
     println!("formatted: {}", "hello");
     println!(
         "multi
-    line
+        line
         string"
     );
 }
@@ -343,8 +344,8 @@ pub fn use_tt_dispatch() {
 }
 
 macro_rules! long_macro_invocation {
-    ( $( $x:expr ),+ $(,)? ) => {
-            ( $( $x ),+ )
+    ($($x:expr),+ $(,)?) => {
+        ($($x),+)
     };
 }
 
@@ -356,8 +357,8 @@ pub fn very_long_macro_call() {
 }
 
 macro_rules! stringify_many {
-    ( $($x:tt)* ) => {
-            ( $( stringify!($x), )* )
+    ($($x:tt)*) => {
+        ($(stringify!($x),)*)
     };
 }
 

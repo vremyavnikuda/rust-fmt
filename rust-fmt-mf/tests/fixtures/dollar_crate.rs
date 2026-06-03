@@ -1,0 +1,5 @@
+macro_rules! use_crate {
+    () => {
+        $crate :: SomeType :: new()
+    };
+}

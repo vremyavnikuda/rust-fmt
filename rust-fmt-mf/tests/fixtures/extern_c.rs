@@ -1,0 +1,7 @@
+macro_rules! c_extern {
+    ($name:ident, $ret:ty, $( $arg:ident : $aty:ty ),*) => {
+        extern "C" {
+                        fn $name( $($arg : $aty),* ) -> $ret;
+        }
+    };
+}

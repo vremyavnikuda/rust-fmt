@@ -1,0 +1,11 @@
+macro_rules! dispatch {
+    (@base $x:expr) => {
+        $x
+    };
+    (@step1 $a:expr, $b:expr) => {
+        dispatch!(@base ($a + $b))
+    };
+    ($a:expr, $b:expr) => {
+        dispatch!(@step1 $a, $b)
+    };
+}

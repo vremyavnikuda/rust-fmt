@@ -1,0 +1,8 @@
+macro_rules! from_brackets {
+    ( [ $x:expr ] ) => {
+        $x
+    };
+    ( { $x:expr } ) => {
+        $x
+    };
+}

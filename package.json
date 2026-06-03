@@ -69,6 +69,16 @@
           "type": "boolean",
           "default": false,
           "description": "Pass format_macro_matchers=true to rustfmt (requires nightly toolchain)."
+        },
+        "macroFormatter.native": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use native macro formatter binary for improved macro_rules! formatting."
+        },
+        "macroFormatter.path": {
+          "type": "string",
+          "default": "",
+          "description": "Custom path to the native macro formatter binary. When empty, uses the bundled binary (bin/<platform>-<arch>/rust-fmt-mf)."
         }
       }
     },
@@ -112,9 +122,10 @@
     ]
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run compile && npm run build:native",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
+    "build:native": "pwsh -NoProfile -File scripts/build-rust-fmt-mf.ps1 -Release",
     "lint": "eslint src --ext ts",
     "test": "vscode-test",
     "pretest": "npm run compile"

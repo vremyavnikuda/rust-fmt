@@ -1,4 +1,6 @@
 {
     "rustfmt.formatMacroBodies": true,
-    "rustfmt.formatMacroMatchers": true
+    "rustfmt.formatMacroMatchers": true,
+    "macroFormatter.native": true,
+    "macroFormatter.path": "C:\\repo\\rust-fmt\\rust-fmt-mf\\target\\debug\\rust-fmt-mf.exe"
 }

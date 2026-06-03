@@ -2,7 +2,8 @@ import * as assert from 'assert';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
-import { RustFormatter, FormatterConfig, normalizeMacroSpacing, normalizeMacroBodies } from '../../formatter';
+import * as vscode from 'vscode';
+import { RustFormatter, FormatterConfig, normalizeMacroSpacing, normalizeMacroBodies, getNativeMacroFormatterPath, formatWithNativeMacroFormatter } from '../../formatter';
 
 const TEST_CONFIG: FormatterConfig = {
     rustfmtPath: 'rustfmt',
@@ -316,6 +317,70 @@ suite('RustFormatter', () => {
             assert.strictEqual(lines[1], '    let mut v = Vec::new();');
             assert.strictEqual(lines[2], '    v.push(1);');
             assert.strictEqual(lines[3], '    }};');
+        });
+    });
+
+    suite('getNativeMacroFormatterPath', () => {
+
+        test('returns explicit path when configured', () => {
+            const config: FormatterConfig = {
+                rustfmtPath: 'rustfmt',
+                extraArgs: [],
+                nativeMacroFormatter: true,
+                nativeMacroFormatterPath: '/custom/path/rust-fmt-mf'
+            };
+            const result = getNativeMacroFormatterPath(config);
+            assert.strictEqual(result, '/custom/path/rust-fmt-mf');
+        });
+
+        test('returns null when native is not enabled', () => {
+            const config: FormatterConfig = {
+                rustfmtPath: 'rustfmt',
+                extraArgs: [],
+                nativeMacroFormatter: false
+            };
+            const result = getNativeMacroFormatterPath(config);
+            assert.strictEqual(result, null);
+        });
+
+        test('returns bundled binary path when native enabled and no explicit path', () => {
+            const config: FormatterConfig = {
+                rustfmtPath: 'rustfmt',
+                extraArgs: [],
+                nativeMacroFormatter: true
+            };
+            const result = getNativeMacroFormatterPath(config);
+            assert.ok(result, 'should return a path');
+            assert.ok(result!.endsWith('rust-fmt-mf') || result!.endsWith('rust-fmt-mf.exe'), `expected binary path, got: ${result}`);
+        });
+    });
+
+    suite('formatWithNativeMacroFormatter', () => {
+
+        test('formats via bundled native macro formatter', async () => {
+            const config: FormatterConfig = {
+                rustfmtPath: 'rustfmt',
+                extraArgs: [],
+                nativeMacroFormatter: true
+            };
+            const context = { cwd: undefined };
+            const result = await formatWithNativeMacroFormatter('fn main() {}', config, context);
+            assert.ok(result, 'should return formatted output');
+            assert.ok(result!.includes('fn main()'), `expected formatted fn main, got: ${JSON.stringify(result)}`);
+        });
+
+        test('returns null on cancellation', async () => {
+            const config: FormatterConfig = {
+                rustfmtPath: 'rustfmt',
+                extraArgs: [],
+                nativeMacroFormatter: true,
+                nativeMacroFormatterPath: '/some/path'
+            };
+            const source = new vscode.CancellationTokenSource();
+            source.cancel();
+            const context = { cwd: undefined };
+            const result = await formatWithNativeMacroFormatter('fn main() {}', config, context, source.token);
+            assert.strictEqual(result, null);
         });
     });
 });

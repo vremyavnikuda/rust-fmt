@@ -4,3 +4,5 @@ out
 img
 test-rs/target
 todo.md
+/rust-fmt-mf/target
+.vscode-test

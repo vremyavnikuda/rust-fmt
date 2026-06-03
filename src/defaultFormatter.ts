@@ -9,7 +9,6 @@ const DEFAULT_FORMATTER_NONE_SENTINEL = '__none__';
 const DEFAULT_FORMATTER_PROMPT_STATE_VERSION_KEY = 'rustfmt.defaultFormatterPromptStateVersion';
 const DEFAULT_FORMATTER_PROMPT_STATE_VERSION = 1;
 const ONBOARDING_MODE_GUIDED = 'guided';
-
 let promptInProgress = false;
 let ignoreLastObservedOnce = false;
 
@@ -29,15 +28,12 @@ export async function maybePromptDefaultFormatter(
     if (!editor || editor.document.languageId !== 'rust') {
         return;
     }
-
     if (getOnboardingMode(editor.document.uri) !== ONBOARDING_MODE_GUIDED) {
         return;
     }
-
     if (context.globalState.get(DEFAULT_FORMATTER_PROMPT_SUPPRESS_KEY)) {
         return;
     }
-
     const currentDefaultFormatter = getCurrentDefaultFormatter(editor.document);
     const currentKey = currentDefaultFormatter ?? DEFAULT_FORMATTER_NONE_SENTINEL;
     let lastObserved = context.workspaceState.get<string>(DEFAULT_FORMATTER_LAST_OBSERVED_KEY);
@@ -45,23 +41,18 @@ export async function maybePromptDefaultFormatter(
         lastObserved = undefined;
         ignoreLastObservedOnce = false;
     }
-
     if (currentDefaultFormatter === DEFAULT_FORMATTER_ID) {
         await context.workspaceState.update(DEFAULT_FORMATTER_LAST_OBSERVED_KEY, currentKey);
         return;
     }
-
     if (promptInProgress) {
         return;
     }
-
     if (lastObserved === currentKey) {
         return;
     }
-
     await context.workspaceState.update(DEFAULT_FORMATTER_LAST_OBSERVED_KEY, currentKey);
     promptInProgress = true;
-
     try {
         let message = 'No default formatter is configured for Rust. Switch to rust-fmt?';
         if (currentDefaultFormatter) {
@@ -70,13 +61,11 @@ export async function maybePromptDefaultFormatter(
                 ? `Rust is currently formatted by "${otherFormatterLabel}". Switch to rust-fmt?`
                 : 'A different default formatter is set for Rust. Switch to rust-fmt?';
         }
-
         const choice = await vscode.window.showInformationMessage(
             message,
             'Switch',
             "Don't ask again"
         );
-
         if (choice === 'Switch') {
             await applyDefaultFormatterSettings(editor.document.uri, context, { askTarget: true });
         } else if (choice === "Don't ask again") {
@@ -95,7 +84,6 @@ export function getRustConfigurationScope(resource?: vscode.Uri): vscode.Configu
     if (resource) {
         return { uri: resource, languageId: 'rust' };
     }
-
     return { languageId: 'rust' };
 }
 
@@ -143,12 +131,10 @@ function getPreferredResource(resource?: vscode.Uri): vscode.Uri | undefined {
     if (resource) {
         return resource;
     }
-
     const activeUri = vscode.window.activeTextEditor?.document.uri;
     if (activeUri) {
         return activeUri;
     }
-
     return vscode.workspace.workspaceFolders?.[0]?.uri;
 }
 
@@ -157,7 +143,6 @@ function resolveFormatterLabel(extensionId: string): string | undefined {
     if (!extension) {
         return extensionId;
     }
-
     const packageJson = extension.packageJSON ?? {};
     return packageJson.displayName || packageJson.name || extensionId;
 }
@@ -167,14 +152,12 @@ function getConfigurationTarget(resource?: vscode.Uri): vscode.ConfigurationTarg
     if (!folders || folders.length === 0) {
         return vscode.ConfigurationTarget.Global;
     }
-
     if (resource) {
         const folder = vscode.workspace.getWorkspaceFolder(resource);
         if (folder) {
             return vscode.ConfigurationTarget.WorkspaceFolder;
         }
     }
-
     return vscode.ConfigurationTarget.Workspace;
 }
 
@@ -186,28 +169,24 @@ function resolveConfigurationTarget(
     if (!inspected) {
         return fallback;
     }
-
     if (
         inspected.workspaceFolderLanguageValue !== undefined ||
         inspected.workspaceFolderValue !== undefined
     ) {
         return vscode.ConfigurationTarget.WorkspaceFolder;
     }
-
     if (
         inspected.workspaceLanguageValue !== undefined ||
         inspected.workspaceValue !== undefined
     ) {
         return vscode.ConfigurationTarget.Workspace;
     }
-
     if (
         inspected.globalLanguageValue !== undefined ||
         inspected.globalValue !== undefined
     ) {
         return vscode.ConfigurationTarget.Global;
     }
-
     return fallback;
 }
 
@@ -216,7 +195,6 @@ async function pickConfigurationTarget(): Promise<vscode.ConfigurationTarget | u
     if (!folders || folders.length === 0) {
         return vscode.ConfigurationTarget.Global;
     }
-
     const selection = await vscode.window.showQuickPick(
         [
             { label: 'Global', description: 'Apply to all workspaces' },
@@ -227,11 +205,9 @@ async function pickConfigurationTarget(): Promise<vscode.ConfigurationTarget | u
             canPickMany: false
         }
     );
-
     if (!selection) {
         return undefined;
     }
-
     return selection.label === 'Workspace'
         ? vscode.ConfigurationTarget.Workspace
         : vscode.ConfigurationTarget.Global;

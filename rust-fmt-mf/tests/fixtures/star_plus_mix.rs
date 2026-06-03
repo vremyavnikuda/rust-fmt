@@ -1,0 +1,5 @@
+macro_rules! mix_star_plus {
+    ( $( $x:expr ),* ; $( $y:expr ),+ ) => {
+        ( $( $x ),* , $( $y ),+ )
+    };
+}

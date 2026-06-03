@@ -1,5 +1,6 @@
 .github/**
 out/**/*.map
+out/test/**
 src/**
 test-rs/**
 .vscode/**
@@ -10,5 +11,6 @@ package-lock.json
 tsconfig.json
 .codewhale/**
 docs/**
-out/test/**
 assets/*.svg
+rust-fmt-mf/**
+scripts/**

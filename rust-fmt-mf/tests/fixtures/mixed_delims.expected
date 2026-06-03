@@ -1,0 +1,5 @@
+macro_rules! mixed_delims {
+    ($($x:expr),*; $($y:expr)*) => {
+        [$($x),*, $($y)*]
+    };
+}

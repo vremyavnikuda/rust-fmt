@@ -17,7 +17,7 @@ function collectTestFiles(dir: string): string[] {
 
 export async function run(): Promise<void> {
     const mocha = new Mocha({
-        ui: 'bdd',
+        ui: 'tdd',
         color: true,
         timeout: 15000
     });

@@ -35,7 +35,6 @@ export async function pickControlCenterAction(): Promise<ControlCenterActionId |
         { id: 'openLogs', label: 'Open Logs' },
         { id: 'reloadWorkspace', label: 'Reload Workspace' }
     ];
-
     const selection = await vscode.window.showQuickPick(items, {
         placeHolder: 'rust-fmt Control Center'
     });
@@ -43,6 +42,5 @@ export async function pickControlCenterAction(): Promise<ControlCenterActionId |
     if (!selection || !('id' in selection)) {
         return undefined;
     }
-
     return selection.id;
 }

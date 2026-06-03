@@ -11,7 +11,6 @@ export async function collectGitRustUris(
 ): Promise<{ uris: vscode.Uri[]; skippedFolders: string[] }> {
     const deduped = new Map<string, vscode.Uri>();
     const skippedFolders: string[] = [];
-
     for (const folder of folders) {
         let output = '';
         try {
@@ -20,7 +19,6 @@ export async function collectGitRustUris(
             skippedFolders.push(folder.name);
             continue;
         }
-
         const changedPaths = output
             .split(/\r?\n/)
             .map((value) => value.trim())
@@ -30,17 +28,14 @@ export async function collectGitRustUris(
             if (!relativePath.endsWith('.rs')) {
                 continue;
             }
-
             const fullPath = path.resolve(folder.uri.fsPath, relativePath);
             if (!await fileExists(fullPath)) {
                 continue;
             }
-
             const uri = vscode.Uri.file(fullPath);
             deduped.set(uri.toString(), uri);
         }
     }
-
     return {
         uris: Array.from(deduped.values()),
         skippedFolders
@@ -59,7 +54,6 @@ async function runGitDiff(rootPath: string, mode: 'working' | 'staged'): Promise
         if (mode === 'staged') {
             args.push('--cached');
         }
-
         cp.execFile('git', args, { maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
             if (error) {
                 reject(new Error(stderr || error.message));

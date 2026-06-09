@@ -2,7 +2,7 @@
   "name": "rust-fmt",
   "displayName": "rust fmt",
   "description": "Format Rust code using rustfmt",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "vremyavnikuda",
   "repository": {
     "type": "git",
@@ -125,7 +125,7 @@
     "vscode:prepublish": "npm run compile && npm run build:native",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "build:native": "pwsh -NoProfile -File scripts/build-rust-fmt-mf.ps1 -Release",
+    "build:native": "python scripts/build_current.py",
     "lint": "eslint src --ext ts",
     "test": "vscode-test",
     "pretest": "npm run compile"

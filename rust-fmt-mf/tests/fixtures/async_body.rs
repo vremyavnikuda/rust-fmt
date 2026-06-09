@@ -1,0 +1,7 @@
+macro_rules! run_futures {
+    ($($future:expr),*) => {
+        async move {
+            $( $future.await; )*
+        }
+    };
+}

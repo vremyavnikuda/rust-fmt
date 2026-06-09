@@ -2,13 +2,13 @@
   "name": "rust-fmt",
   "displayName": "rust fmt",
   "description": "Format Rust code using rustfmt",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "publisher": "vremyavnikuda",
   "repository": {
     "type": "git",
     "url": "https://github.com/shikoucore/rust-fmt.git"
   },
-  "icon": "assets/icon_rust_fmt.png",
+  "icon": "assets/rust_fmt_icon.png",
   "engines": {
     "vscode": "^1.108.0"
   },
@@ -50,10 +50,51 @@
           "items": {
             "type": "string"
           }
+        },
+        "rustfmt.onboarding.mode": {
+          "type": "string",
+          "enum": [
+            "quiet",
+            "guided"
+          ],
+          "default": "quiet",
+          "description": "Controls default formatter onboarding prompts. Use 'guided' to enable switch prompts."
+        },
+        "rustfmt.formatMacroBodies": {
+          "type": "boolean",
+          "default": false,
+          "description": "Pass format_macro_bodies=true to rustfmt (requires nightly toolchain)."
+        },
+        "rustfmt.formatMacroMatchers": {
+          "type": "boolean",
+          "default": false,
+          "description": "Pass format_macro_matchers=true to rustfmt (requires nightly toolchain)."
+        },
+        "macroFormatter.native": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use native macro formatter binary for improved macro_rules! formatting."
+        },
+        "macroFormatter.path": {
+          "type": "string",
+          "default": "",
+          "description": "Custom path to the native macro formatter binary. When empty, uses the bundled binary (bin/<platform>-<arch>/rust-fmt-mf)."
         }
       }
     },
     "commands": [
+      {
+        "command": "rust-fmt.controlCenter",
+        "title": "rust-fmt: Open Control Center"
+      },
+      {
+        "command": "rust-fmt.configureBehavior",
+        "title": "rust-fmt: Open Behavior Controls"
+      },
+      {
+        "command": "rust-fmt.formatSelection",
+        "title": "Format Selection with rustfmt"
+      },
       {
         "command": "rust-fmt.format",
         "title": "Format Document with rustfmt"
@@ -63,31 +104,42 @@
         "title": "Format Workspace with rustfmt"
       },
       {
-        "command": "rust-fmt.useAsDefaultFormatter",
-        "title": "Use rust-fmt as Default Formatter"
-      }
-    ],
-    "keybindings": [
+        "command": "rust-fmt.formatChanged",
+        "title": "Format Changed Rust Files"
+      },
       {
-        "command": "rust-fmt.formatWorkspace",
-        "key": "shift+alt+f",
-        "mac": "shift+option+f",
-        "when": "editorTextFocus && editorLangId == rust"
+        "command": "rust-fmt.formatStaged",
+        "title": "Format Staged Rust Files"
+      },
+      {
+        "command": "rust-fmt.useAsDefaultFormatter",
+        "title": "rust-fmt: Set as Default Formatter"
+      },
+      {
+        "command": "rust-fmt.openLogs",
+        "title": "rust-fmt: Open Logs"
       }
     ]
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run compile && npm run build:native",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "lint": "eslint src --ext ts"
+    "build:native": "pwsh -NoProfile -File scripts/build-rust-fmt-mf.ps1 -Release",
+    "lint": "eslint src --ext ts",
+    "test": "vscode-test",
+    "pretest": "npm run compile"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^20.19.41",
     "@types/vscode": "^1.108.1",
     "@typescript-eslint/eslint-plugin": "^6.0.0",
     "@typescript-eslint/parser": "^6.0.0",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
     "eslint": "^8.0.0",
+    "mocha": "^11.7.6",
     "typescript": "^5.0.0"
   }
 }

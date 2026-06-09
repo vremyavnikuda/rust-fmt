@@ -1,7 +1,7 @@
 .github/**
 out/**/*.map
+out/test/**
 src/**
-test/**
 test-rs/**
 .vscode/**
 .editorconfig
@@ -9,3 +9,8 @@ test-rs/**
 .gitignore
 package-lock.json
 tsconfig.json
+.codewhale/**
+docs/**
+assets/*.svg
+rust-fmt-mf/**
+scripts/**

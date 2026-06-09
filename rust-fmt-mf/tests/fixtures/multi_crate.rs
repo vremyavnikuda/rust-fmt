@@ -1,0 +1,5 @@
+macro_rules! multi_crate {
+    () => {
+        $crate :: foo :: bar ( $crate :: baz :: qux )
+    };
+}

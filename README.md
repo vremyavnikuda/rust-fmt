@@ -1,33 +1,39 @@
-![rust-fmt banner](assets/baner.png)
+<div align="center">
+  <img src="assets/rust_fmt_logo.png" alt="rust fmt logo" width="680">
+</div>
 
 # rust fmt
 
-Simple VS Code extension for formatting Rust code using `rustfmt`.
+VS Code extension for formatting Rust code with `rustfmt`.
+
+Supports:
+- File formatting (including format on save)
+- Workspace formatting (`cargo fmt`-optimized)
+- Git-aware formatting (`changed` / `staged` Rust files)
+- Status bar + Control Center quick actions
+- Native `macro_rules!` body formatting (opt-in)
 
 [Marketplace](https://marketplace.visualstudio.com/items?itemName=vremyavnikuda.rust-fmt)
 
 ## Requirements
 
-You need `rustfmt` installed. Install it via:
-
 ```bash
 rustup component add rustfmt
 ```
 
-Verify installation:
+Works on **Linux, Windows, macOS**.
 
-```bash
-rustfmt --version
-rustc --version
-rustup --version
-```
+## Settings
 
-Works on **Linux, Windows, and macOS**. If your project uses `rust-toolchain` files, `rustup` is required so the extension can pick the correct toolchain.
-For faster workspace formatting, `cargo` must be available (usually installed with Rust/rustup).
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `rustfmt.path` | `"rustfmt"` | Path to rustfmt executable |
+| `rustfmt.extraArgs` | `[]` | Additional rustfmt arguments |
+| `rustfmt.onboarding.mode` | `"quiet"` | Onboarding mode (`quiet` / `guided`) |
+| `nativeMacroFormatter.native` | `false` | Enable `macro_rules!` body formatting |
+| `nativeMacroFormatter.path` | auto | Path to `rust-fmt-mf` binary |
 
-## VS Code Settings
-
-Add to your `settings.json` and set rust-fmt as the default formatter for Rust:
+Set as default formatter in `settings.json`:
 
 ```json
 "[rust]": {
@@ -36,35 +42,23 @@ Add to your `settings.json` and set rust-fmt as the default formatter for Rust:
 }
 ```
 
-## Extension Settings
+## Commands
 
-- `rustfmt.path`: Path to rustfmt executable (default: "rustfmt")
-- `rustfmt.extraArgs`: Additional arguments for rustfmt (default: [])
-
-## Usage
-
-**Automatic:** Save any `.rs` file (if `formatOnSave` is enabled).
-
-**Manual:**
-- Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) -> "Format Document with rustfmt" (current file)
-- Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) -> "Format Workspace with rustfmt" (all Rust files; uses `cargo fmt` when all files are saved)
-- Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) -> "Use rust-fmt as Default Formatter" (prompts for Global or Workspace, then enables format on save)
-- Shortcut: `Shift+Alt+F` (Windows/Linux) or `Shift+Option+F` (Mac) formats the entire workspace when a Rust file is active
-- Status bar: "rust-fmt: active" appears for Rust files; click to format workspace
+| Command | Description |
+|---------|-------------|
+| Format Document with rustfmt | Current file (on save) |
+| Format Workspace with rustfmt | All Rust files in workspace |
+| Format Changed Rust Files | Files from `git diff` |
+| Format Staged Rust Files | Files from `git diff --cached` |
+| Open Control Center | Quick action menu |
+| Open Logs | Output channel |
 
 ## How it works
 
-The extension runs `rustfmt --emit stdout` on your code and applies the formatted result.
+Runs `rustfmt --emit stdout` with auto-detected crate root, edition, and config. When `nativeMacroFormatter.native` is enabled, formats `macro_rules!` bodies via `rust-fmt-mf` (skipped by standard rustfmt).
 
-It also:
-- Sets the working directory to the nearest `Cargo.toml` (crate root).
-- Reads `edition` from `Cargo.toml` and passes `--edition`.
-- Finds `rustfmt.toml` / `.rustfmt.toml` and passes `--config-path`.
-- If `rust-toolchain(.toml)` is present, sets `RUSTUP_TOOLCHAIN` automatically.
-- Skips files larger than 2 MB.
-- Uses `cargo fmt` per crate when formatting the workspace and all Rust files are saved; otherwise it falls back to per-file formatting and skips dirty files.
+Also detects `rust-toolchain` and `rustfmt.toml`, skips files over 2 MB.
 
 ## Troubleshooting
 
-- `rustfmt` not found: install it via `rustup component add rustfmt` or set `rustfmt.path` to the executable.
-
+- `rustfmt` not found: run `rustup component add rustfmt` or set `rustfmt.path`.

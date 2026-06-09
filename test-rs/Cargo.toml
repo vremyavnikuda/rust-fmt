@@ -1,0 +1,3 @@
+[package]
+name = "test-fmt"
+edition = "2021"

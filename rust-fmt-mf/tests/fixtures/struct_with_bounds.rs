@@ -1,0 +1,11 @@
+macro_rules! struct_with_bounds {
+    (#[$meta:meta] $vis:vis struct $name:ident<$($param:ident),+> where $($bound:ident : $trait:path),+ $(,)?{$($field:ident : $ty:ty),+ $(,)?}) => {
+                        #[$meta]
+        $vis struct $name<$($param),+>
+                    where
+            $($param: $trait),+
+        {
+                                        $(pub $field: $ty),+
+                 }
+    };
+}

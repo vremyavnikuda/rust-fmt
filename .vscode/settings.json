@@ -1,0 +1,6 @@
+{
+    "[rust]": {
+        "editor.defaultFormatter": "vremyavnikuda.rust-fmt",
+        "editor.formatOnSave": true
+    }
+}

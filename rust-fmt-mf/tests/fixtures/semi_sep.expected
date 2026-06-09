@@ -1,0 +1,5 @@
+macro_rules! semi_sep {
+    ($($x:expr);*) => {
+        vec![$($x),*]
+    };
+}

@@ -1,0 +1,9 @@
+macro_rules! long_pat {
+    (
+        $a:expr ,
+        $b:expr ,
+        $c:expr
+    ) => {
+        ( $a + $b + $c )
+    };
+}

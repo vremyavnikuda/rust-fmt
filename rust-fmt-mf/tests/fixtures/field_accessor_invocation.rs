@@ -1,0 +1,29 @@
+macro_rules! field_accessor {
+    ($struct_name:ident, $($field:ident : $ty:ty),+) => {
+        impl $struct_name {
+            $(
+                pub fn $field(&self) -> &$ty {
+                    &self.$field
+                }
+            )+
+        }
+    };
+}
+
+pub struct DataFields {
+        pub name: String,
+    pub age: u32,
+    pub email: String,
+        pub active: bool,
+}
+
+field_accessor!( DataFields, name: String, age: u32, email: String, active: bool );
+
+pub fn use_accessors(data: &DataFields) {
+    println!("{} {} {} {}",
+        data.name(),
+        data.age(),
+      data.email(),
+        data.active()
+    );
+}

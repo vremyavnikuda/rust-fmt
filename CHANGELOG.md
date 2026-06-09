@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.6 - 2026-06-10
+
+### Added
+- Full cross-platform support: native macro formatter binaries for Linux (`linux-x64`) and macOS (`darwin-x64`, `darwin-arm64`) in addition to Windows.
+
 ## 0.1.5 - 2026-06-09
 
 ### Added

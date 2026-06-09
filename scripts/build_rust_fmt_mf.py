@@ -13,14 +13,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 def get_project_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
-
 def get_binary_name(platform: str) -> str:
     return "rust-fmt-mf.exe" if platform.startswith("win32") else "rust-fmt-mf"
-
 
 def get_current_platform() -> str:
     arch = "x64"
@@ -31,7 +28,6 @@ def get_current_platform() -> str:
     else:
         return "linux-x64"
 
-
 def get_current_target() -> str:
     if sys.platform == "win32":
         return "x86_64-pc-windows-msvc"
@@ -40,7 +36,6 @@ def get_current_target() -> str:
     else:
         return "x86_64-unknown-linux-gnu"
 
-
 ALL_TARGETS: list[dict[str, str]] = [
     {"target": "x86_64-pc-windows-msvc", "platform": "win32-x64"},
     {"target": "x86_64-unknown-linux-gnu", "platform": "linux-x64"},
@@ -48,18 +43,20 @@ ALL_TARGETS: list[dict[str, str]] = [
     {"target": "aarch64-apple-darwin", "platform": "darwin-arm64"},
 ]
 
-
 def build_target(
     target: str,
     platform: str,
     project_dir: Path,
     bin_dir: Path,
     is_release: bool,
+    current_target: str | None = None,
 ) -> bool:
     build_type = "release" if is_release else "debug"
     profile_flag = "--release" if is_release else ""
     print(f"Building for {target} ({platform})...")
-    cmd = ["cargo", "build", "-p", "rust-fmt-mf", "--manifest-path", str(project_dir / "Cargo.toml")]
+    is_cross = current_target is not None and target != current_target
+    tool = "zigbuild" if is_cross else "build"
+    cmd = ["cargo", tool, "-p", "rust-fmt-mf", "--manifest-path", str(project_dir / "Cargo.toml")]
     cmd += ["--target", target]
     if profile_flag:
         cmd.append(profile_flag)
@@ -79,7 +76,6 @@ def build_target(
     shutil.copy2(str(src), str(dst))
     print(f"  -> {dst}")
     return True
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build rust-fmt-mf for one or more targets")
@@ -111,9 +107,10 @@ def main() -> int:
         targets_to_build.append({"target": get_current_target(), "platform": get_current_platform()})
     print(f"Building rust-fmt-mf ({build_type})")
     print(f"Current platform: {get_current_platform()}")
+    current_target = get_current_target()
     success = True
     for t in targets_to_build:
-        if not build_target(t["target"], t["platform"], project_dir, bin_dir, is_release):
+        if not build_target(t["target"], t["platform"], project_dir, bin_dir, is_release, current_target):
             success = False
     if not args.all and not args.target:
         print()

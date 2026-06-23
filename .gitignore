@@ -6,3 +6,4 @@ test-rs/target
 todo.md
 /rust-fmt-mf/target
 .vscode-test
+rust-fmt-mf/tests/__pycache__/

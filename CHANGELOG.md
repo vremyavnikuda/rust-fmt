@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.7 - 2026-06-22
+
+### Fixed
+- Raw string closing delimiter order in parser: was `#"` (hash-then-quote) instead of `"#` (quote-then-hash), causing unterminated raw strings that swallowed subsequent macro definitions.
+- Off-by-one in parser brace matching when a string escape `\\` is at the last byte of a macro body.
+- Empty arm bodies now parse correctly (zero-length body extraction).
+
+### Changed
+- Rewrote `normalize_body_indent` — replaced heuristic min_indent/has_closer approach with a state machine that tracks structural depth (`{`/`}`, `$(`/`)+` repetition, `where` clauses). Normalization now runs before `$()` replacement so the original macro syntax is visible to the depth tracker. Fixes indentation for macros with where clauses, nested repetitions, inline braces, and multi-level `$()` nesting.
+- Rewrote shadow file builder (`build_shadow_file_from_strings`) to preserve relative indentation via min-indent stripping instead of adding a uniform 4-space indent.
+- Added single-line arm body extraction in `split_shadow_into_arms` for arms with `() => { BODY };` on one line.
+- Added `macro_end.min(source.len())` safety clamp in `scan_arms`.
+- Pre-computed brace counts per line in VS Code extension `normalizeMacroBodies` — replaces O(n²) `countChar` calls with O(1) array lookups; moved `normalizeMacroSpacing` before native formatter path.
+
 ## 0.1.6 - 2026-06-10
 
 ### Added

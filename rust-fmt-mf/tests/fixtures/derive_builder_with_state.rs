@@ -1,0 +1,15 @@
+macro_rules! derive_builder_with_state {
+    ($(#[$outer:meta])* $vis:vis struct $name:ident < $($param:ident $(: $bound:path)?),+ $(,)? > where $($where_clause:ident : $where_bound:path),+ $(,)? $({$($field:ident : $fty:ty),+ $(,)?})?) => {
+        $(#[$outer])*
+        $vis struct $name<$($param),+>
+                where
+                    $($where_clause: $where_bound),+
+        {
+            $(
+                $(
+                        pub $field: $fty,
+                )+
+            )?
+                                            }
+    };
+}

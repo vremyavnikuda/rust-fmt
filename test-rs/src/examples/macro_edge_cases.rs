@@ -1,19 +1,19 @@
 //! Edge cases for macro formatting that are NOT covered by macro_heavy.rs
 //!
 //! Unique patterns tested here:
-//!   - $crate hygienic paths
-//!   - Escaped dollar sign $$
-//!   - TT dispatch with @marker internal arms
-//!   - Recursive with $()* repetition
-//!   - $pat and $literal fragment specifiers
-//!   - Multi-delimiter definition
-//!   - unsafe and async body blocks
-//!   - Macro calling another macro
-//!   - impl Trait generated inside macro body
-//!   - const generic parameter in macro pattern
-//!   - Vec of trailing comma styles $(,)? combined
-//!   - Complex nested repetition with mix of * + ?
-//!   - $crate resolved path in invocation
+//! - $crate hygienic paths
+//! - Escaped dollar sign $$
+//! - TT dispatch with @marker internal arms
+//! - Recursive with $()* repetition
+//! - $pat and $literal fragment specifiers
+//! - Multi-delimiter definition
+//! - unsafe and async body blocks
+//! - Macro calling another macro
+//! - impl Trait generated inside macro body
+//! - const generic parameter in macro pattern
+//! - Vec of trailing comma styles $(,)? combined
+//! - Complex nested repetition with mix of * + ?
+//! - $crate resolved path in invocation
 
 // $crate hygienic path demonstration
 macro_rules! format_greeting {
@@ -48,13 +48,13 @@ macro_rules! tt_dispatch_compute {
 // Recursive macro with $()* repetition
 macro_rules! sum_repeat {
     ($($x:expr),* $(,)?) => {
-        sum_repeat!(@acc 0 ; $($x),*)
+        sum_repeat!(@acc 0; $($x),*)
     };
     (@acc $acc:expr;) => {
         $acc
     };
     (@acc $acc:expr; $head:expr $(, $tail:expr)*) => {
-        sum_repeat!(@acc ($acc + $head) ; $($tail),*)
+        sum_repeat!(@acc ($acc + $head); $($tail),*)
     };
 }
 
@@ -165,6 +165,68 @@ macro_rules! concat_ids {
     };
 }
 
+// ---- Test macros (simple to super complex) ----
+
+// [1/4] Simple: single arm, match with raw strings
+macro_rules! build_prompt {
+    ($kind:expr) => {
+        match $kind {
+            "user" => r#"You are a friendly agent."#,
+            "analyzer" => r#"You are analytical."#,
+            _ => r#"Unknown kind."#,
+        }
+    };
+}
+
+// [2/4] Medium: nested impl with $() repetition
+macro_rules! impl_with_defaults {
+    ($ty:ty, $($trait:ty => fn $method:ident($($arg:ident: $aty:ty),*) -> $ret:ty),+ $(,)?) => {
+        $(
+            impl $trait for $ty {
+                fn $method($($arg: $aty),*) -> $ret {
+                    unimplemented!()
+                }
+            }
+        )+
+    };
+}
+
+// [3/4] Complex: TT dispatch with repetitions
+macro_rules! http_router {
+    (@get $path:expr) => {
+        ("GET", $path)
+    };
+    (@post $path:expr) => {
+        ("POST", $path)
+    };
+    (@put $path:expr) => {
+        ("PUT", $path)
+    };
+    (@delete $path:expr) => {
+        ("DELETE", $path)
+    };
+    ($($method:ident $path:expr),+ $(,)?) => {
+        vec![$(http_router!(@$method $path)),+]
+    };
+}
+
+// [4/4] Super complex: attributes, where, double-brace, nested $()
+macro_rules! derive_builder_with_state {
+    ($(#[$outer:meta])* $vis:vis struct $name:ident < $($param:ident $(: $bound:path)?),+ $(,)? > where $($where_clause:ident : $where_bound:path),+ $(,)? $({$($field:ident : $fty:ty),+ $(,)?})?) => {
+        $(#[$outer])*
+        $vis struct $name<$($param),+>
+        where
+            $($where_clause: $where_bound),+
+        {
+            $(
+                $(
+                    pub $field: $fty,
+                )+
+            )?
+        }
+    };
+}
+
 // Invocations
 pub struct DemoType;
 
@@ -185,9 +247,9 @@ pub fn test_edge_invocations() {
     println!("env: {}", env_name);
 
     // TT dispatch
-    let doubled = tt_dispatch_compute!(double 21  );
+    let doubled = tt_dispatch_compute!(double 21 );
     let squared = tt_dispatch_compute!(square 9);
-    let negated = tt_dispatch_compute!(negate 42  );
+    let negated = tt_dispatch_compute!(negate 42 );
     println!("{} {} {}", doubled, squared, negated);
 
     // Recursive sum
@@ -200,13 +262,13 @@ pub fn test_edge_invocations() {
     println!("checked: {}", checked);
 
     // Literal array
-    let arr = array_of_literals!(7 ; 5   );
+    let arr = array_of_literals!(7 ; 5 );
     println!("{:?}", arr);
 
     // Multi delimiter
     let a = multi_delim_style!(1, 2, 3);
     let b = multi_delim_style![4, 5, 6];
-    let c = multi_delim_style! {   7,8,9  };
+    let c = multi_delim_style! {7,8,9 };
     println!("{:?} {:?} {:?}", a, b, c);
 
     // Unsafe deref
@@ -219,7 +281,7 @@ pub fn test_edge_invocations() {
     println!("incremented: {}", incremented);
 
     // Const generic repeat
-    let repeated = repeat_const!(99 ; 3  );
+    let repeated = repeat_const!(99 ; 3 );
     println!("{:?}", repeated);
 
     // Concat ids
@@ -252,3 +314,27 @@ pub fn use_tuple_structs() {
     };
     println!("done");
 }
+
+// Invocations for new test macros
+pub fn test_new_macros() {
+    let _prompt = build_prompt!("user");
+    let routes = http_router!(
+        get "/users",
+        post "/users",
+        put "/users/{id}",
+        delete "/users/{id}",
+    );
+    println!("{:?}", routes);
+}
+
+derive_builder_with_state!(
+    #[derive(Debug, Clone)]
+    pub struct User<T, U>
+    where
+        T: Clone,
+        U: Default,
+    {
+        name: T,
+        email: U,
+    }
+);

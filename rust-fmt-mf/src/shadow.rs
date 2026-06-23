@@ -55,28 +55,41 @@ pub fn build_shadow_file_from_strings(body_strings: &[String]) -> String {
         "plus_semi",
     ] {
         s.push_str(&format!(
-            "macro_rules! __mf_rep_{kind} {{\n    ($($t:tt)*) => {{ $($t)* }};\n}}\n",
+            "macro_rules! __mf_rep_{kind} {{\n ($($t:tt)*) => {{ $($t)* }};\n}}\n",
             kind = kind
         ));
     }
     s.push('\n');
     for (i, body) in body_strings.iter().enumerate() {
-        // Indent each line of the body by 4 extra spaces to ensure no line
-        // matches the `() => {` rule indent (4), which would confuse the
-        // arm body extraction logic's closing brace detection.
-        let indented = body
-            .lines()
+        // Normalize to 0-indent baseline so rustfmt's non-uniform body-indent
+        // shift (first line→body_indent, others→body_indent+original) preserves
+        // relative indentation.
+        let lines: Vec<&str> = body.lines().collect();
+        let min_indent = lines
+            .iter()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.len() - l.trim_start().len())
+            .min()
+            .unwrap_or(0);
+        let indented = lines
+            .iter()
             .map(|l| {
                 if l.trim().is_empty() {
                     String::new()
                 } else {
-                    format!("    {}", l)
+                    let line_indent = l.len() - l.trim_start().len();
+                    let rel_indent = line_indent.saturating_sub(min_indent);
+                    let trimmed = l.trim();
+                    let mut line = String::with_capacity(rel_indent + trimmed.len());
+                    line.push_str(&" ".repeat(rel_indent));
+                    line.push_str(trimmed);
+                    line
                 }
             })
             .collect::<Vec<_>>()
             .join("\n");
         s.push_str(&format!(
-            "macro_rules! __rustfmt_mf_arm_{i} {{\n    () => {{\n{}\n    }};\n}}\n\n",
+            "macro_rules! __rustfmt_mf_arm_{i} {{\n () => {{\n{}\n }};\n}}\n\n",
             indented
         ));
     }

@@ -106,9 +106,11 @@ export class RustFormatter {
         if (token?.isCancellationRequested) {
             return null;
         }
+        // Normalize spacing first — improves both native and TS paths
+        const normalizedText = normalizeMacroSpacing(text);
         if (this.config.nativeMacroFormatter && text.includes('macro_rules!')) {
             console.log('[rust-fmt] Using native macro formatter');
-            const nativeResult = await formatWithNativeMacroFormatter(text, this.config, context, token);
+            const nativeResult = await formatWithNativeMacroFormatter(normalizedText, this.config, context, token);
             if (nativeResult !== null) {
                 return nativeResult;
             }
@@ -190,7 +192,6 @@ export class RustFormatter {
                 finish(null);
                 return;
             }
-            const normalizedText = normalizeMacroSpacing(text);
             const finalText = text.includes('macro_rules!') ? normalizeMacroBodies(normalizedText) : normalizedText;
             rustfmt.stdin.write(finalText);
             rustfmt.stdin.end();
@@ -509,6 +510,22 @@ export function normalizeMacroSpacing(text: string): string {
 export function normalizeMacroBodies(text: string): string {
     const lines = text.split('\n');
     const result = [...lines];
+
+    // Pre-compute brace counts per line — eliminates O(n²) from repeated countChar
+    const openBrace = new Array<number>(lines.length);
+    const closeBrace = new Array<number>(lines.length);
+    for (let idx = 0; idx < lines.length; idx++) {
+        const ln = lines[idx];
+        let oc = 0, cc = 0;
+        for (let j = 0; j < ln.length; j++) {
+            const ch = ln[j];
+            if (ch === '{') oc++;
+            else if (ch === '}') cc++;
+        }
+        openBrace[idx] = oc;
+        closeBrace[idx] = cc;
+    }
+
     let i = 0;
     while (i < lines.length) {
         const line = lines[i];
@@ -516,7 +533,7 @@ export function normalizeMacroBodies(text: string): string {
         let depth = 0;
         let end = i;
         for (let j = i; j < lines.length; j++) {
-            depth += countChar(lines[j], '{') - countChar(lines[j], '}');
+            depth += openBrace[j] - closeBrace[j];
             if (depth === 0 && j > i) { end = j; break; }
         }
         const macroText = lines.slice(i, end + 1).join('\n');
@@ -541,8 +558,9 @@ export function normalizeMacroBodies(text: string): string {
                 } else if (ch === '}') {
                     armNestDepth--;
                     if (armNestDepth === 0) {
-                        if (armLines.length === 0 || armLines[armLines.length - 1] !== lines[i + currentLineIdx]) {
-                            armLines.push(lines[i + currentLineIdx]);
+                        const lastLine = lines[i + currentLineIdx];
+                        if (armLines.length === 0 || armLines[armLines.length - 1] !== lastLine) {
+                            armLines.push(lastLine);
                         }
                         const bodyLines = armLines.slice(1);
                         const innerCount = bodyLines.length - 1;
@@ -553,19 +571,16 @@ export function normalizeMacroBodies(text: string): string {
                                 const bl = bodyLines[bi];
                                 const bt = bl.trimStart();
                                 if (bt.length === 0) { continue; }
-                                // Pre-indent: close repetition and braces first
+                                const resultIdx = i + armBodyLineStart + bi;
                                 if (/\)[+*]/.test(bt)) {
                                     nestLevel = Math.max(0, nestLevel - 1);
                                 }
-                                nestLevel = Math.max(0, nestLevel - countChar(bt, '}'));
-                                // Compute indent
+                                nestLevel = Math.max(0, nestLevel - closeBrace[resultIdx]);
                                 const newIndent = expectedIndent + nestLevel * 4;
-                                // Post-indent: open braces and repetition
-                                nestLevel += countChar(bt, '{');
-                                if (/^\$\(/.test(bt)) {
+                                nestLevel += openBrace[resultIdx];
+                                if (bt.startsWith('$(')) {
                                     nestLevel++;
                                 }
-                                const resultIdx = i + armBodyLineStart + bi;
                                 if (resultIdx < result.length) {
                                     const oldIndent = bl.length - bt.length;
                                     if (newIndent !== oldIndent) {
@@ -602,12 +617,4 @@ export function normalizeMacroBodies(text: string): string {
         i = end + 1;
     }
     return result.join('\n');
-}
-
-function countChar(s: string, ch: string): number {
-    let c = 0;
-    for (let idx = 0; idx < s.length; idx++) {
-        if (s[idx] === ch) { c++; }
-    }
-    return c;
 }

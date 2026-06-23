@@ -228,6 +228,19 @@ pub(crate) fn split_shadow_into_arms(shadow_file: &str) -> Vec<String> {
         // Track indent from the `() => {` line
         if rule_indent.is_none() && line.trim().contains("=> {") {
             rule_indent = Some(line.len() - line.trim_start().len());
+            // Single-line arm body: `() => { BODY };` — extract body directly
+            let trimmed = line.trim();
+            if let Some(arrow_pos) = trimmed.find("=> {") {
+                let after_brace = &trimmed[arrow_pos + 4..];
+                if let Some(semi_pos) = after_brace.find("};") {
+                    let body = after_brace[..semi_pos].to_string();
+                    sections.push(body);
+                    arm_lines.clear();
+                    in_arm = false;
+                    rule_indent = None;
+                    continue;
+                }
+            }
             arm_lines.push(line);
             continue;
         }
@@ -236,17 +249,6 @@ pub(crate) fn split_shadow_into_arms(shadow_file: &str) -> Vec<String> {
         if in_arm && (trimmed == "};" || trimmed == "}};") {
             let line_indent = line.len() - trimmed.len();
             if rule_indent.map_or(true, |ri| line_indent == ri) {
-                sections.push(compact_arm_body(&arm_lines));
-                arm_lines.clear();
-                in_arm = false;
-                rule_indent = None;
-                continue;
-            }
-        }
-        if in_arm && trimmed == "}" {
-            let line_indent = line.len() - trimmed.len();
-            if line_indent == 0 {
-                // `}` at column 0 is the macro_rules! closing brace
                 sections.push(compact_arm_body(&arm_lines));
                 arm_lines.clear();
                 in_arm = false;
@@ -311,6 +313,8 @@ fn extract_arm_body_single(line: &str) -> Option<&str> {
     let body_end = rest.rfind("};")?;
     if body_end > 0 {
         Some(rest[..body_end].trim())
+    } else if body_end == 0 {
+        Some("")
     } else {
         None
     }

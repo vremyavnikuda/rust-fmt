@@ -71,7 +71,7 @@ pub fn parse_macro_defs(source: &str) -> anyhow::Result<Vec<MacroDef>> {
                         && bytes[hash_start + hash_count] == b'"'
                     {
                         pos = hash_start + hash_count + 1; // after r#"..."#
-                        let delimiter = format!("{}\"", "#".repeat(hash_count));
+                        let delimiter = format!("\"{}", "#".repeat(hash_count));
                         while pos < bytes.len() {
                             if pos + hash_count < bytes.len()
                                 && &bytes[pos..pos + hash_count + 1] == delimiter.as_bytes()
@@ -212,6 +212,7 @@ fn find_macro_rules(bytes: &[u8], pos: usize) -> Option<usize> {
 /// Each arm: (pattern) => { body }
 /// Also supports {pattern} and [pattern] as arm delimiters.
 fn scan_arms(source: &str, macro_start: usize, macro_end: usize) -> anyhow::Result<Vec<MacroArm>> {
+    let macro_end = macro_end.min(source.len());
     let text = &source[macro_start..macro_end];
     let bytes = text.as_bytes();
     let mut arms = Vec::new();
@@ -250,6 +251,8 @@ fn scan_arms(source: &str, macro_start: usize, macro_end: usize) -> anyhow::Resu
                     in_string = false;
                 } else if bytes[pos] == b'\\' {
                     pos += 1; // skip escape
+                    if pos >= bytes.len() { break; }
+                    continue;
                 }
             } else {
                 match bytes[pos] {
@@ -292,6 +295,8 @@ fn scan_arms(source: &str, macro_start: usize, macro_end: usize) -> anyhow::Resu
                     in_string = false;
                 } else if bytes[pos] == b'\\' {
                     pos += 1;
+                    if pos >= bytes.len() { break; }
+                    continue;
                 }
             } else {
                 match bytes[pos] {
@@ -432,6 +437,23 @@ macro_rules! pat {
         let body = &source[defs[0].arms[0].body_span.clone()];
         assert!(body.contains("$x * 2"));
     }
+    #[test]
+    fn test_raw_string_in_body() {
+        let source = "\nmacro_rules! test {\n    ($x:expr) => {\n        let s = r#\"hello world\"#;\n        $x\n    };\n}\n";
+        let defs = parse_macro_defs(source).unwrap();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "test");
+        let body = &source[defs[0].arms[0].body_span.clone()];
+        assert!(body.contains("hello world"), "body should contain raw string content");
+    }
+
+    #[test]
+    fn test_multi_macro_with_raw_string() {
+        let source = "\nmacro_rules! first {\n    ($x:expr) => {\n        let s = r#\"data\"#;\n        $x\n    };\n}\nmacro_rules! second {\n    () => { 42 };\n}\n";
+        let defs = parse_macro_defs(source).unwrap();
+        assert!(defs.len() >= 2, "should find at least 2 macros, found {}", defs.len());
+    }
+
     #[test]
     fn test_no_macros() {
         let source = "fn main() { println!(\"hello\"); }";

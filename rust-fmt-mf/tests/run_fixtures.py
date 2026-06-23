@@ -40,6 +40,7 @@ FIXTURES = [
     "comments",
     "complex_pattern",
     "define_enum_invocation",
+    "derive_builder_with_state",
     "dispatch",
     "dollar_crate",
     "dollar_dollar",

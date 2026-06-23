@@ -2,11 +2,11 @@
   "name": "rust-fmt",
   "displayName": "rust fmt",
   "description": "Format Rust code using rustfmt",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "publisher": "vremyavnikuda",
   "repository": {
     "type": "git",
-    "url": "https://github.com/shikoucore/rust-fmt.git"
+    "url": "https://github.com/vremyavnikuda/rust-fmt.git"
   },
   "icon": "assets/rust_fmt_icon.png",
   "engines": {

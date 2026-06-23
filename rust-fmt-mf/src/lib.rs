@@ -5,6 +5,9 @@ pub mod replacer;
 pub mod shadow;
 pub mod types;
 
+#[cfg(test)]
+mod tests;
+
 use crate::formatter::{run_rustfmt, run_rustfmt_no_macro};
 use crate::mapper::apply_formatting;
 use crate::parser::parse_macro_defs;
@@ -225,6 +228,7 @@ fn normalize_body_indent(body: &str) -> String {
 
     result.join("\n")
 }
+
 /// Re-indent the body content inside macro invocations `ident!(...)`, `ident!{...}`, `ident![...]`.
 ///
 /// rustfmt does not deeply format macro invocation bodies (they may use DSL syntax
@@ -390,6 +394,7 @@ fn reindent_invocation_bodies(text: &str) -> String {
     }
     result
 }
+
 fn final_format_pass(
     source: &str,
     rustfmt_path: &str,
@@ -416,6 +421,7 @@ fn final_format_pass(
     result = reindent_invocation_bodies(&result);
     Ok(result)
 }
+
 pub fn format_source(
     source: &str,
     rustfmt_path: &str,

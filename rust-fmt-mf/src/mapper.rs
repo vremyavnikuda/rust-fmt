@@ -584,7 +584,7 @@ fn collapse_simple_delimited(text: &str) -> String {
 }
 
 /// Detect `macro_rules! __rustfmt_mf_arm_N` or `macro_rules ! __rustfmt_mf_arm_N`
-fn detect_arm_opener(line: &str) -> Option<usize> {
+pub(crate) fn detect_arm_opener(line: &str) -> Option<usize> {
     let trimmed = line.trim();
     let after = trimmed
         .strip_prefix("macro_rules! __rustfmt_mf_arm_")
@@ -596,7 +596,7 @@ fn detect_arm_opener(line: &str) -> Option<usize> {
 /// Map a single formatted arm section back to original macro syntax.
 ///
 /// Handles `__mf_rep_*! { ... }` markers inline (not just at line start).
-fn map_arm_section(section: &str, mapping: &Mapping) -> String {
+pub(crate) fn map_arm_section(section: &str, mapping: &Mapping) -> String {
     let with_reps = replace_rep_markers(section);
     let restored = restore_placeholders(&with_reps, mapping);
     let spaced = normalize_body_spacing(&restored);
@@ -798,7 +798,7 @@ fn replace_rep_markers(text: &str) -> String {
 
 /// Replace placeholder identifiers with original macro text.
 /// Sorts by placeholder length (longest first) to avoid partial replacements.
-fn restore_placeholders(text: &str, mapping: &Mapping) -> String {
+pub(crate) fn restore_placeholders(text: &str, mapping: &Mapping) -> String {
     let mut result = text.to_string();
     let mut placeholders: Vec<(&String, &String)> = mapping.vars.iter().collect();
     // Sort by key length descending to avoid partial matches
@@ -807,60 +807,4 @@ fn restore_placeholders(text: &str, mapping: &Mapping) -> String {
         result = result.replace(placeholder.as_str(), original.as_str());
     }
     result
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn make_mapping(vars: &[(&str, &str)]) -> Mapping {
-        let mut m = Mapping::new();
-        for (placeholder, original) in vars {
-            m.vars.insert(placeholder.to_string(), original.to_string());
-        }
-        m
-    }
-    #[test]
-    fn test_detect_arm_opener() {
-        assert_eq!(
-            detect_arm_opener("macro_rules! __rustfmt_mf_arm_0 {"),
-            Some(0)
-        );
-        assert_eq!(
-            detect_arm_opener("    macro_rules! __rustfmt_mf_arm_42 {"),
-            Some(42)
-        );
-        assert_eq!(detect_arm_opener("fn foo() {"), None);
-    }
-    #[test]
-    fn test_restore_placeholders() {
-        let mapping = make_mapping(&[("__m_0", "$x"), ("__m_1", "$y")]);
-        let result = restore_placeholders("let x = __m_0 + __m_1;", &mapping);
-        assert_eq!(result, "let x = $x + $y;");
-    }
-    #[test]
-    fn test_restore_longest_first() {
-        // __m_10 should be replaced before __m_1 to avoid partial match
-        let mapping = make_mapping(&[("__m_1", "$a"), ("__m_10", "$bb")]);
-        let result = restore_placeholders("__m_10 + __m_1", &mapping);
-        assert_eq!(result, "$bb + $a");
-    }
-    #[test]
-    fn test_map_arm_section_with_repetition() {
-        let section =
-            "    impl __m_0 {\n        __mf_rep_plus! {\n            __m_1\n        }\n    }";
-        let mapping = make_mapping(&[("__m_0", "$struct_name"), ("__m_1", "$field")]);
-        let result = map_arm_section(section, &mapping);
-        assert!(result.contains("$("));
-        assert!(result.contains(")+"));
-        assert!(result.contains("$struct_name"));
-        assert!(result.contains("$field"));
-    }
-    #[test]
-    fn test_split_shadow_into_arms() {
-        let shadow = "#![allow(unused_attributes, dead_code)]\n\nmacro_rules! __rustfmt_mf_arm_0 {\n    () => {\n        let x = 1;\n    };\n}\n\nmacro_rules! __rustfmt_mf_arm_1 {\n    () => {\n        let y = 2;\n    };\n}\n";
-        let sections = split_shadow_into_arms(shadow);
-        assert_eq!(sections.len(), 2);
-        assert!(sections[0].contains("let x = 1"));
-        assert!(sections[1].contains("let y = 2"));
-    }
 }

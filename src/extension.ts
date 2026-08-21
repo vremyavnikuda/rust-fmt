@@ -459,6 +459,9 @@ async function maybePromptMacroFormatting(): Promise<void> {
     if (macroPromptInProgress) {
         return;
     }
+    if (vscode.workspace.getConfiguration('macroFormatter').get<boolean>('native')) {
+        return;
+    }
     if (extContext.globalState.get(MACRO_PROMPT_SUPPRESS_KEY)) {
         return;
     }

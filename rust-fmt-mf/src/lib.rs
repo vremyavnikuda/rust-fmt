@@ -416,7 +416,17 @@ fn final_format_pass(
     for (i, def) in macro_defs.iter().enumerate() {
         let placeholder = format!("/**** __mf_nm_{i}__ ****/");
         let orig_def = &source[def.span.clone()];
-        result = result.replacen(&placeholder, orig_def, 1);
+        if let Some(pos) = result.find(&placeholder) {
+            let line_start = result[..pos].rfind('\n').map(|p| p + 1).unwrap_or(0);
+            if result[line_start..pos]
+                .chars()
+                .all(|c| c == ' ' || c == '\t')
+            {
+                result.replace_range(line_start..pos + placeholder.len(), orig_def);
+            } else {
+                result.replace_range(pos..pos + placeholder.len(), orig_def);
+            }
+        }
     }
     result = reindent_invocation_bodies(&result);
     Ok(result)

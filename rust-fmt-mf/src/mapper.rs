@@ -133,9 +133,19 @@ pub fn apply_formatting(
                 result.push_str(trimmed);
             } else {
                 // No prefix newline — single-line context
-                let trimmed = collapsed_pattern.trim_start();
-                result.push_str(&" ".repeat(brace_indent));
-                result.push_str(trimmed);
+                if is_first_arm {
+                    if let Some(open_pos) = collapsed_pattern.find('{') {
+                        result.push_str(&collapsed_pattern[..=open_pos]);
+                        result.push('\n');
+                        result.push_str(&" ".repeat(brace_indent));
+                        result.push_str(collapsed_pattern[open_pos + 1..].trim_start());
+                    } else {
+                        result.push_str(collapsed_pattern.trim_start());
+                    }
+                } else {
+                    result.push_str(&" ".repeat(brace_indent));
+                    result.push_str(collapsed_pattern.trim_start());
+                }
             }
             let formatted_inner = map_arm_section(section, mapping);
             // Emit `{` (or `{{` for double_brace) and newline

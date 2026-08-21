@@ -221,7 +221,7 @@ fn scan_arms(source: &str, macro_start: usize, macro_end: usize) -> anyhow::Resu
     while pos < bytes.len() && bytes[pos] != b'{' {
         pos += 1;
     }
-            pos += 1;
+    pos += 1;
     while pos < bytes.len() {
         // Skip whitespace between arms
         while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
@@ -251,7 +251,9 @@ fn scan_arms(source: &str, macro_start: usize, macro_end: usize) -> anyhow::Resu
                     in_string = false;
                 } else if bytes[pos] == b'\\' {
                     pos += 1; // skip escape
-                    if pos >= bytes.len() { break; }
+                    if pos >= bytes.len() {
+                        break;
+                    }
                     continue;
                 }
             } else {
@@ -295,7 +297,9 @@ fn scan_arms(source: &str, macro_start: usize, macro_end: usize) -> anyhow::Resu
                     in_string = false;
                 } else if bytes[pos] == b'\\' {
                     pos += 1;
-                    if pos >= bytes.len() { break; }
+                    if pos >= bytes.len() {
+                        break;
+                    }
                     continue;
                 }
             } else {

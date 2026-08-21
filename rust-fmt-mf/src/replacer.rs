@@ -304,7 +304,7 @@ pub fn replace_macro_syntax_text(body_text: &str, mapping: &mut Mapping) -> Stri
                     continue;
                 }
                 let close_paren = j - 1; // position of ')'
-                // Extract inner pattern (between $( and ))
+                                         // Extract inner pattern (between $( and ))
                 let inner = &body_text[i + 2..close_paren];
                 // Recursively replace macro syntax in the inner pattern
                 let inner_replaced = replace_macro_syntax_text(inner, mapping);
@@ -408,5 +408,3 @@ pub fn replace_macro_syntax_text(body_text: &str, mapping: &mut Mapping) -> Stri
     }
     result
 }
-
-

@@ -126,14 +126,21 @@ fn test_raw_string_in_body() {
     assert_eq!(defs.len(), 1);
     assert_eq!(defs[0].name, "test");
     let body = &source[defs[0].arms[0].body_span.clone()];
-    assert!(body.contains("hello world"), "body should contain raw string content");
+    assert!(
+        body.contains("hello world"),
+        "body should contain raw string content"
+    );
 }
 
 #[test]
 fn test_multi_macro_with_raw_string() {
     let source = "\nmacro_rules! first {\n    ($x:expr) => {\n        let s = r#\"data\"#;\n        $x\n    };\n}\nmacro_rules! second {\n    () => { 42 };\n}\n";
     let defs = parse_macro_defs(source).unwrap();
-    assert!(defs.len() >= 2, "should find at least 2 macros, found {}", defs.len());
+    assert!(
+        defs.len() >= 2,
+        "should find at least 2 macros, found {}",
+        defs.len()
+    );
 }
 
 #[test]
@@ -207,8 +214,7 @@ fn test_restore_longest_first() {
 
 #[test]
 fn test_map_arm_section_with_repetition() {
-    let section =
-        "    impl __m_0 {\n        __mf_rep_plus! {\n            __m_1\n        }\n    }";
+    let section = "    impl __m_0 {\n        __mf_rep_plus! {\n            __m_1\n        }\n    }";
     let mapping = make_mapping(&[("__m_0", "$struct_name"), ("__m_1", "$field")]);
     let result = map_arm_section(section, &mapping);
     assert!(result.contains("$("));

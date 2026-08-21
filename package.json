@@ -127,7 +127,7 @@
     "watch": "tsc -watch -p ./",
     "build:native": "python scripts/build_current.py",
     "lint": "eslint src --ext ts",
-    "test": "vscode-test",
+    "test": "node ./out/test/runTest.js",
     "pretest": "npm run compile"
   },
   "devDependencies": {

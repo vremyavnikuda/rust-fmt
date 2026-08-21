@@ -100,3 +100,11 @@ fn test_struct_with_bounds_pipeline() {
         "Expected body indent"
     );
 }
+
+#[test]
+fn test_impl_for_converges_in_one_call() {
+    let source = include_str!("fixtures/impl_for.rs");
+    let once = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+    let twice = rust_fmt_mf::format_source(&once, "rustfmt", "2021", None).unwrap();
+    assert_eq!(once, twice);
+}

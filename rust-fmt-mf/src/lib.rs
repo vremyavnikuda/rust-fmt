@@ -422,7 +422,7 @@ fn final_format_pass(
     Ok(result)
 }
 
-pub fn format_source(
+fn format_source_once(
     source: &str,
     rustfmt_path: &str,
     edition: &str,
@@ -458,4 +458,21 @@ pub fn format_source(
     let formatted_shadow = run_rustfmt(&shadow_code, rustfmt_path, edition, config_path)?;
     let result = apply_formatting(source, &macro_defs, &formatted_shadow, &all_mappings);
     final_format_pass(&result, rustfmt_path, edition, config_path)
+}
+
+pub fn format_source(
+    source: &str,
+    rustfmt_path: &str,
+    edition: &str,
+    config_path: Option<&str>,
+) -> anyhow::Result<String> {
+    let mut current = source.to_string();
+    for _ in 0..4 {
+        let next = format_source_once(&current, rustfmt_path, edition, config_path)?;
+        if next == current {
+            return Ok(next);
+        }
+        current = next;
+    }
+    anyhow::bail!("macro formatting did not converge after 4 passes")
 }

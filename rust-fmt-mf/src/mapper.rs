@@ -58,7 +58,7 @@ pub fn apply_formatting(
             let is_first_arm = macro_pos == def.span.start;
             if is_first_arm {
                 if let Some(open_pos) = collapsed_pattern.find('{') {
-                    let prefix = &collapsed_pattern[..=open_pos];
+                    let prefix = format!("{} {{", collapsed_pattern[..open_pos].trim_end());
                     let suffix = &collapsed_pattern[open_pos + 1..];
                     let mut normalized_suffix = suffix.to_string();
                     let mut prev: String;
@@ -123,6 +123,7 @@ pub fn apply_formatting(
                     }
                 }
             }
+            collapsed_pattern = normalize_arrow_spacing(&collapsed_pattern);
             // Re-indent the pattern line to match brace_indent
             if let Some(last_nl) = collapsed_pattern.rfind('\n') {
                 let prefix = &collapsed_pattern[..=last_nl];
@@ -143,8 +144,20 @@ pub fn apply_formatting(
                         result.push_str(collapsed_pattern.trim_start());
                     }
                 } else {
-                    result.push_str(&" ".repeat(brace_indent));
-                    result.push_str(collapsed_pattern.trim_start());
+                    let trimmed = collapsed_pattern.trim_start();
+                    if let Some(separator) = trimmed
+                        .chars()
+                        .next()
+                        .filter(|c| *c == ';' || *c == ',')
+                    {
+                        result.push(separator);
+                        result.push('\n');
+                        result.push_str(&" ".repeat(brace_indent));
+                        result.push_str(trimmed[separator.len_utf8()..].trim_start());
+                    } else {
+                        result.push_str(&" ".repeat(brace_indent));
+                        result.push_str(trimmed);
+                    }
                 }
             }
             let formatted_inner = map_arm_section(section, mapping);
@@ -196,7 +209,25 @@ pub fn apply_formatting(
         mapping_offset += def.arms.len();
         section_offset += def.arms.len();
         // Copy remaining content after last arm body (semicolons, closing braces)
-        result.push_str(&original_source[macro_pos..def.span.end]);
+        let tail = &original_source[macro_pos..def.span.end];
+        let trimmed_tail = tail.trim();
+        if !tail.contains('\n')
+            && (trimmed_tail == "}" || trimmed_tail == ";}" || trimmed_tail == ",}")
+        {
+            if trimmed_tail.len() == 2 {
+                result.push(trimmed_tail.as_bytes()[0] as char);
+            }
+            result.push('\n');
+            result.push_str(&" ".repeat(
+                original_source[def.span.start..]
+                    .chars()
+                    .take_while(|c| *c == ' ' || *c == '\t')
+                    .count(),
+            ));
+            result.push('}');
+        } else {
+            result.push_str(tail);
+        }
         src_pos = def.span.end;
     }
     // Copy remaining code after last macro
@@ -391,6 +422,15 @@ fn normalize_pattern_text(text: &str) -> String {
         i += 1;
     }
     result
+}
+
+fn normalize_arrow_spacing(text: &str) -> String {
+    let trimmed = text.trim_end();
+    if let Some(before) = trimmed.strip_suffix("=>") {
+        format!("{} => ", before.trim_end())
+    } else {
+        text.to_string()
+    }
 }
 
 /// Collapse multi-line arm patterns to a single line.

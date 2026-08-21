@@ -22,3 +22,40 @@ jobs:
         run: npm run lint
       - name: Compile
         run: npm run compile
+
+  native:
+    name: Native formatter (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            binary: bin/linux-x64/rust-fmt-mf
+          - os: windows-latest
+            binary: bin/win32-x64/rust-fmt-mf.exe
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Rust
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup component add rustfmt
+      - name: Test Rust formatter
+        working-directory: rust-fmt-mf
+        run: cargo test --all-targets
+      - name: Build bundled binary
+        run: python scripts/build_current.py --release
+      - name: Check Linux executable bit
+        if: runner.os == 'Linux'
+        run: test -x bin/linux-x64/rust-fmt-mf
+      - name: Validate bundled binary
+        run: python rust-fmt-mf/tests/run_fixtures.py --binary ${{ matrix.binary }}
+      - name: Upload macro diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macro-audit-${{ runner.os }}
+          path: rust-fmt-mf/target/macro-audit
+          if-no-files-found: ignore

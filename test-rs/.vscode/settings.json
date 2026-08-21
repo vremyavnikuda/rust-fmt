@@ -3,7 +3,5 @@
         "editor.defaultFormatter": "vremyavnikuda.rust-fmt",
         "editor.formatOnSave": true
     },
-    "rustfmt.formatMacroBodies": true,
-    "rustfmt.formatMacroMatchers": true,
     "macroFormatter.native": true
 }

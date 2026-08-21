@@ -8,6 +8,8 @@ Usage:
 """
 
 import argparse
+import platform
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -21,15 +23,25 @@ def get_binary_name() -> str:
     return "rust-fmt-mf.exe" if sys.platform == "win32" else "rust-fmt-mf"
 
 
-def get_platform() -> str:
-    arch_map = {"AMD64": "x64", "x86_64": "x64", "arm64": "arm64", "aarch64": "arm64"}
-    arch = arch_map.get(sys.platform == "win32" and "AMD64" or "x86_64", "x64")
-    if sys.platform == "win32":
-        return f"win32-{arch}"
-    elif sys.platform == "darwin":
-        return f"darwin-{arch}"
-    else:
-        return f"linux-{arch}"
+def get_platform(sys_platform: str | None = None, machine: str | None = None) -> str:
+    sys_platform = sys_platform or sys.platform
+    machine = machine or platform.machine()
+    arch = {
+        "AMD64": "x64",
+        "x86_64": "x64",
+        "arm64": "arm64",
+        "aarch64": "arm64",
+    }.get(machine)
+    if arch is None:
+        raise ValueError(f"Unsupported architecture: {machine}")
+    os_name = (
+        "win32"
+        if sys_platform == "win32"
+        else "darwin"
+        if sys_platform == "darwin"
+        else "linux"
+    )
+    return f"{os_name}-{arch}"
 
 
 def main() -> int:
@@ -62,6 +74,8 @@ def main() -> int:
     dst = dst_dir / binary_name
     import shutil
     shutil.copy2(str(src), str(dst))
+    if sys.platform != "win32":
+        dst.chmod(dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     print(f"-> {dst}")
     return 0
 

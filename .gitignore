@@ -7,3 +7,4 @@ todo.md
 /rust-fmt-mf/target
 .vscode-test
 rust-fmt-mf/tests/__pycache__/
+scripts/__pycache__/

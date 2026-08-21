@@ -7,6 +7,9 @@ Usage:
     python run_fixtures.py                        # run from tests/ dir
 """
 
+import argparse
+import difflib
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -30,6 +33,13 @@ def find_binary(project_root: Path) -> Path:
         if c.is_file():
             return c
     sys.exit(f"Binary not found. Build first with: cargo build -p rust-fmt-mf")
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--binary", type=Path)
+    parser.add_argument("--rustfmt", default="rustfmt")
+    return parser.parse_args(argv)
 
 
 FIXTURES = [
@@ -112,10 +122,49 @@ def normalize(s: str) -> str:
     return s.replace("\r\n", "\n").strip() + "\n"
 
 
+def write_failure(
+    audit_root: Path,
+    name: str,
+    input_text: str,
+    expected: str,
+    actual: str,
+    stderr: str,
+    rustfmt_stderr: str,
+    second: str,
+) -> None:
+    case_dir = audit_root / name
+    case_dir.mkdir(parents=True, exist_ok=True)
+    diff = "".join(
+        difflib.unified_diff(
+            normalize(expected).splitlines(keepends=True),
+            normalize(actual).splitlines(keepends=True),
+            fromfile="expected",
+            tofile="actual",
+        )
+    )
+    for filename, content in {
+        "input.rs": input_text,
+        "expected.rs": expected,
+        "actual.rs": actual,
+        "stderr.txt": stderr,
+        "rustfmt-stderr.txt": rustfmt_stderr,
+        "second.rs": second,
+        "diff.patch": diff,
+    }.items():
+        (case_dir / filename).write_text(content, encoding="utf-8")
+
+
 def main() -> int:
+    args = parse_args()
     root = get_project_root()
-    binary = find_binary(root)
+    binary = args.binary.resolve() if args.binary else find_binary(root)
+    if not binary.is_file():
+        print(red(f"Binary not found: {binary}"), file=sys.stderr)
+        return 1
     fixture_dir = root / "tests" / "fixtures"
+    audit_root = root / "target" / "macro-audit"
+    if audit_root.exists():
+        shutil.rmtree(audit_root)
     all_passed = True
     for name in FIXTURES:
         input_path = fixture_dir / f"{name}.rs"
@@ -127,30 +176,69 @@ def main() -> int:
         input_text = input_path.read_text(encoding="utf-8")
         expected = expected_path.read_text(encoding="utf-8")
         print(f"{name}", end="  ")
-        proc = subprocess.run(
-            [str(binary)],
-            input=input_text,
+        try:
+            proc = subprocess.run(
+                [str(binary)],
+                input=input_text,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            print(red(f"ERROR: {exc}"))
+            write_failure(audit_root, name, input_text, expected, "", str(exc), "", "")
+            all_passed = False
+            continue
+        syntax = subprocess.run(
+            [args.rustfmt, "--edition", "2021", "--emit", "stdout"],
+            input=proc.stdout,
             capture_output=True,
             text=True,
             encoding="utf-8",
         )
-        if proc.returncode != 0:
-            print(red("ERROR"))
-            print(proc.stderr)
-            all_passed = False
-            continue
+        second = subprocess.run(
+            [str(binary)],
+            input=proc.stdout,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
         result = normalize(proc.stdout)
         expected_norm = normalize(expected)
-        if result == expected_norm:
+        failures = []
+        if proc.returncode != 0:
+            failures.append(f"formatter exit {proc.returncode}")
+        if result != expected_norm:
+            failures.append("golden output differs")
+        if syntax.returncode != 0:
+            failures.append(f"rustfmt validation exit {syntax.returncode}")
+        if second.returncode != 0:
+            failures.append(f"second formatter exit {second.returncode}")
+        elif second.stdout != proc.stdout:
+            failures.append("output is not idempotent")
+        if not failures:
             print(green("PASS"))
         else:
-            print(red("DIFF:"))
-            print(gray("  Expected:"))
-            for line in expected.splitlines():
-                print(f"    {line}")
-            print(gray("  Got:"))
-            for line in proc.stdout.splitlines():
-                print(f"    {line}")
+            print(red("FAIL: " + ", ".join(failures)))
+            diff = difflib.unified_diff(
+                expected_norm.splitlines(),
+                result.splitlines(),
+                fromfile="expected",
+                tofile="actual",
+                lineterm="",
+            )
+            for line in diff:
+                print(gray(line))
+            write_failure(
+                audit_root,
+                name,
+                input_text,
+                expected,
+                proc.stdout,
+                proc.stderr + second.stderr,
+                syntax.stderr,
+                second.stdout,
+            )
             all_passed = False
     if all_passed:
         print(f"\n{green('All fixtures passed!')}")

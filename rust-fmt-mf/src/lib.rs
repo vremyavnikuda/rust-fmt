@@ -1001,6 +1001,17 @@ struct OnceResult {
     skipped_reasons: Vec<Option<String>>,
 }
 
+/// Decide whether a batched shadow-format result is safe to apply. Returns
+/// `Some(candidate)` when the batch produced output that exactly preserves
+/// the original's significant tokens; `None` means the caller must fall
+/// back to formatting definitions one at a time.
+fn accepted_batch_result(original: &str, batch_result: anyhow::Result<String>) -> Option<String> {
+    match batch_result {
+        Ok(candidate) if ensure_tokens_preserved(original, &candidate).is_ok() => Some(candidate),
+        _ => None,
+    }
+}
+
 fn format_definition_once(
     source: &str,
     definition: &crate::types::MacroDef,

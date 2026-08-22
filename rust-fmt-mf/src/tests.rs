@@ -569,3 +569,26 @@ fn rustfmt_call_count_tracks_successful_spawns() {
     crate::formatter::run_rustfmt_no_macro("fn main() {}", "rustfmt", "2021", None).unwrap();
     assert_eq!(crate::formatter::rustfmt_call_count(), 2);
 }
+
+#[test]
+fn accepted_batch_result_uses_candidate_when_tokens_preserved() {
+    let original = "fn main() { 1 + 1; }";
+    let candidate = "fn main() {\n    1 + 1;\n}".to_string();
+    let result = super::accepted_batch_result(original, Ok(candidate.clone()));
+    assert_eq!(result, Some(candidate));
+}
+
+#[test]
+fn accepted_batch_result_falls_back_when_tokens_change() {
+    let original = "fn main() { 1 + 1; }";
+    let corrupted = "fn main() { 1 + 2; }".to_string();
+    let result = super::accepted_batch_result(original, Ok(corrupted));
+    assert_eq!(result, None);
+}
+
+#[test]
+fn accepted_batch_result_falls_back_on_error() {
+    let original = "fn main() { 1 + 1; }";
+    let result = super::accepted_batch_result(original, Err(anyhow::anyhow!("boom")));
+    assert_eq!(result, None);
+}

@@ -8,3 +8,4 @@ todo.md
 .vscode-test
 rust-fmt-mf/tests/__pycache__/
 scripts/__pycache__/
+.worktrees/

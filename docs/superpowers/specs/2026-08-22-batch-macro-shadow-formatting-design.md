@@ -9,14 +9,14 @@ Cut the number of `rustfmt` subprocess spawns needed to format a macro-heavy fil
 Measured directly (not estimated) on `test-rs/src/examples/macro_heavy.rs` — 371 lines, 21 `macro_rules!` definitions, already fully formatted (every macro reports `UNCHANGED`):
 
 - **Wall time:** ~1.0s per format (`/usr/bin/time`, 3 runs: 1.04s / 0.96s / 0.96s), for a file that changes nothing. This is the common case (re-saving an already-formatted file) and it is roughly 10-100x slower than what an editor format-on-save should feel like.
-- **`rustfmt` subprocess count:** 94 successful spawns for one `format_source_with_report` call (via `strace -f -e trace=execve`), split by mode:
-  - 90 spawns with `--config format_macro_bodies=true` (the "shadow file" trick, i.e. `run_rustfmt`)
-  - 4 spawns with `--config format_macro_bodies=false` (`run_rustfmt_no_macro`, one per convergence pass plus final validation)
-- **Per-pass breakdown of the 90 shadow-mode calls** (measured via temporary call-site instrumentation, one full pass = 34 calls):
-  - **21 calls (62%)** — one `run_rustfmt` per `macro_rules!` definition, from `format_definition_once`'s shadow-file call (`lib.rs:1041`)
-  - 12 calls (35%) — one `try_format_as_mod`/`try_format_as_fn` pair per `$()` repetition body, from `preformat_rep_bodies` (`lib.rs:146-148`)
-  - 1 call (3%) — item/block-shaped macro invocation formatting, from `format_invocation_inner` (`lib.rs:512-513`)
-- 34 calls/pass × ~2.6 passes to reach the fixed point ≈ the observed 90.
+- **`rustfmt` subprocess count:** 47 successful spawns for one `format_source_with_report` call, measured with `rustfmt_call_count()` (the counter incremented once per successful `Command::spawn()` inside `run_rustfmt`/`run_rustfmt_no_macro` — this is the correct methodology; an earlier draft of this section used `strace -f -e trace=execve | grep 'execve.*rustfmt' | wc -l` and reported 94, but on a rustup-managed toolchain every `rustfmt` invocation execs twice — once for the `~/.cargo/bin/rustfmt` shim, once for its exec into the real `~/.rustup/toolchains/.../bin/rustfmt` binary — so the strace-based method double-counts every real spawn. The 47/45/2/17 figures below were confirmed directly with `rustfmt_call_count()` against the pre-batching code, not merely inferred by halving), split by mode:
+  - 45 spawns with `--config format_macro_bodies=true` (the "shadow file" trick, i.e. `run_rustfmt`)
+  - 2 spawns with `--config format_macro_bodies=false` (`run_rustfmt_no_macro`, one per convergence pass plus final validation)
+- **Per-pass breakdown of the 45 shadow-mode calls** (one full pass ≈ 17 calls, same proportions as originally observed since the doubling artifact applies uniformly to every call site):
+  - **~11 calls (62%)** — one `run_rustfmt` per `macro_rules!` definition, from `format_definition_once`'s shadow-file call (`lib.rs:1041`)
+  - ~6 calls (35%) — one `try_format_as_mod`/`try_format_as_fn` pair per `$()` repetition body, from `preformat_rep_bodies` (`lib.rs:146-148`)
+  - <1 call (3%) — item/block-shaped macro invocation formatting, from `format_invocation_inner` (`lib.rs:512-513`)
+- 17 calls/pass × ~2.6 passes to reach the fixed point ≈ the observed 45.
 
 The dominant cost is the **one-`rustfmt`-call-per-macro-definition** pattern. Definitions already batch their own arms into one shadow file (`build_shadow_file_from_strings` already accepts multiple body strings) — the missing piece is batching *across* definitions in the same file.
 
@@ -130,7 +130,7 @@ Add a process-wide `AtomicUsize` counter in `formatter.rs`, incremented once per
 
 ## Completion Criteria
 
-- `rustfmt_call_count()` for formatting `test-rs/src/examples/macro_heavy.rs` (21 definitions, already-formatted) drops from ~90 to a small, fixed-size number independent of definition count.
+- `rustfmt_call_count()` for formatting `test-rs/src/examples/macro_heavy.rs` (21 definitions, already-formatted) drops from ~45 shadow-mode spawns to a small, fixed-size number independent of definition count (measured after implementation: 27 total spawns, down from 47).
 - `cargo test --release` in `rust-fmt-mf`: 91/91 passing, unchanged.
 - `python3 tests/run_fixtures.py`: 100% exact-output conformance, unchanged, 0 new `SKIPPED` outcomes.
 - Wall-clock time for the same fixture drops measurably (recorded, not promised as an exact number ahead of implementation).

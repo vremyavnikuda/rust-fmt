@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Changed
-- Macro definitions in the same file are now formatted in one combined `rustfmt` call per convergence pass instead of one call per definition, falling back to the previous per-definition behavior only if the batch fails the token-preservation check. Measured on a 21-macro fixture: `rustfmt` subprocess spawns dropped from 94 to 54, wall-clock time from ~1.0s to ~0.62s.
+- Macro definitions in the same file are now formatted in one combined `rustfmt` call per convergence pass instead of one call per definition, falling back to the previous per-definition behavior only if the batch fails the token-preservation check. Measured on a 21-macro fixture using `rustfmt_call_count()` (successful `Command::spawn()` calls in-process, not `execve` events — a naive `strace -f -e trace=execve` count double-counts every call because each `rustfmt` invocation on this rustup setup execs twice, through the `~/.cargo/bin/rustfmt` shim and then the real toolchain binary): `rustfmt` subprocess spawns dropped from 47 to 27, wall-clock time from ~1.0s to ~0.62s.
 
 ## 0.1.8 - 2026-08-22
 

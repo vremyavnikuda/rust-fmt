@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Adversarial regression fixtures for matcher line comments, literal delimiters, Unicode identifiers, synthetic-marker collisions, `macro_rules!` text inside literals and comments, all definition/transcriber delimiters, arbitrary repetition separators, tuple trailing commas, and opaque macro DSLs.
 - Compilation validation of a temporary fully formatted `test-rs` copy with `cargo check --all-targets`.
 - Native binary path and SHA-256 logging in the VS Code extension for detecting stale bundled artifacts.
+- Native binary support for `linux-arm64` and `win32-arm64`, extending bundled platform coverage from four targets to six.
+- CI validation of the native formatter on `macos-latest`, `macos-13`, and `ubuntu-24.04-arm` runners, in addition to the existing Linux x64 and Windows x64 coverage.
 
 ### Changed
 - Replaced byte-level `macro_rules!` discovery with `ra-ap-rustc_lexer`, exact UTF-8 byte ranges, and typed matching for `()`, `[]`, and `{}` delimiters.
@@ -23,7 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Formatting now converges to a fixed point in at most eight token-preserving passes. Non-converging input still fails closed instead of returning unstable output.
 - The VS Code extension now sends the original document directly to the native formatter. Native failure falls back to ordinary `rustfmt` using the same original text, without TypeScript spacing or indentation rewrites.
 - The current-platform build verifies that the release artifact and copied `bin/<platform>-<arch>` binary have identical SHA-256 hashes.
-- Rebuilt the bundled Linux x64 native formatter with the new safety pipeline while leaving other platform artifacts unchanged.
+- Rebuilt every bundled native formatter binary (`linux-x64`, `linux-arm64`, `win32-x64`, `win32-arm64`, `darwin-x64`, `darwin-arm64`) against the new safety pipeline.
+- Generalized the CI executable-bit check to every non-Windows target instead of only `linux-x64`.
 - Renamed the audit summary to distinguish execution safety, exact-output conformance, non-skipped macro handling, and macros actually changed on the current input. `UNCHANGED` is no longer presented as a successful formatting change.
 - Nested Rust blocks now use a deterministic compact layout: arbitrary blank lines between statements are removed while top-level items remain separated.
 - Macro repetitions containing statements are expanded to a block layout with structural indentation; expression-only repetitions remain compact.
@@ -58,6 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A stray `max_width=80` / `chain_width=40` override in the non-macro rustfmt pass made every formatted file — macro or not — wrap significantly more aggressively than `cargo fmt`'s real defaults (`max_width=100`, `chain_width=60`). Removed the override so output matches an unconfigured `rustfmt` exactly; workspaces with their own `rustfmt.toml` were never affected.
 - Invocations of user-defined macros with a long comma-separated argument list (e.g. `my_macro!(1, 2, 3, ...)`) were exploded to one item per line instead of packing greedily like rustfmt does for `vec!`. `format_dsl_comma_list` now fills each line up to the style width before wrapping, matching `rustfmt`'s own line-filling behavior.
 - `test-rs/src/examples/macro_edge_cases.rs` had accumulated blank lines between doc-comment bullets and macro definitions that its scrambled sibling fixture (`tests/fixtures/real_macro_edge_cases.rs`) never had; since `rustfmt` treats blank lines between comments as significant and does not collapse them, the two inputs could never converge to the same golden. Removed the stray blank lines so both sources format identically.
+- `Format Workspace` only re-ran the native macro formatter on files whose text literally contained `macro_rules!`, so files without a macro definition kept whatever plain `cargo fmt` produced instead of the native pipeline's output — including redundant blank lines the native pass would otherwise collapse. The native pass now runs on every file after the bulk `cargo fmt` warm-up, matching the result of formatting a single file on save.
 
 ## 0.1.7 - 2026-06-22
 

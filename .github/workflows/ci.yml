@@ -36,6 +36,12 @@ jobs:
             binary: bin/linux-x64/rust-fmt-mf
           - os: windows-latest
             binary: bin/win32-x64/rust-fmt-mf.exe
+          - os: macos-latest
+            binary: bin/darwin-arm64/rust-fmt-mf
+          - os: macos-13
+            binary: bin/darwin-x64/rust-fmt-mf
+          - os: ubuntu-24.04-arm
+            binary: bin/linux-arm64/rust-fmt-mf
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -51,9 +57,9 @@ jobs:
         run: python -m unittest discover -s rust-fmt-mf/tests -p "test_*.py" -v
       - name: Build bundled binary
         run: python scripts/build_current.py --release
-      - name: Check Linux executable bit
-        if: runner.os == 'Linux'
-        run: test -x bin/linux-x64/rust-fmt-mf
+      - name: Check executable bit
+        if: runner.os != 'Windows'
+        run: test -x ${{ matrix.binary }}
       - name: Validate bundled binary
         run: python rust-fmt-mf/tests/run_fixtures.py --binary ${{ matrix.binary }}
       - name: Upload macro diagnostics

@@ -1,0 +1,3 @@
+macro_rules! literal_delimiters {
+    () => {let ch='}';let byte=b')';let text="}]) macro_rules!";let raw=r#"{[(])}"#;/* }}} */ch};
+}

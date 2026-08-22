@@ -1,0 +1,3 @@
+const EXAMPLE:&str="macro_rules! fake { () => { 1 } }";
+// macro_rules! commented { () => { 2 } }
+macro_rules! real {()=>{3};}

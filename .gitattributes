@@ -1,0 +1,12 @@
+# Force LF line endings for all text files regardless of platform or the
+# checking-out machine's core.autocrlf setting. Without this, Windows
+# runners (including GitHub Actions' windows-latest, which defaults to
+# core.autocrlf=true) check out .rs fixtures with CRLF even though the
+# git blob stores LF, which the formatter's own safety oracle correctly
+# flags as a changed significant token (a comment's literal text includes
+# its trailing \r) inside tests that exercise internal primitives directly.
+* text=auto eol=lf
+
+# Compiled binaries — never touch line endings.
+bin/** binary
+assets/*.png binary

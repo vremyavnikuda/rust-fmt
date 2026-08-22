@@ -1,5 +1,5 @@
 macro_rules! define_enum {
-    ($name:ident{$($variant:ident $(($($field:ty),*))?),+ $(,)?}) => {
+    ($name:ident { $($variant:ident $(($($field:ty),*))?),+ $(,)? }) => {
         pub enum $name {
             $($variant $(($($field),*))?,)+
         }
@@ -7,7 +7,7 @@ macro_rules! define_enum {
 }
 
 define_enum! {
-    MyGeneratedEnum  {
+    MyGeneratedEnum {
         Alpha,
         Beta(i32),
         Gamma(String, i32),

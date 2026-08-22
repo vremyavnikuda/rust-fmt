@@ -1,0 +1,2 @@
+/**** __mf_nm_0__ ****/
+macro_rules! marker_collision {($x:expr)=>{let __m_0=__mf_rep_star!{$x};let __rust_fmt_mf_0_var_0=__m_0;__rust_fmt_mf_0_var_0};}

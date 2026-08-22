@@ -7,6 +7,13 @@
       "group": "build",
       "problemMatcher": "$tsc",
       "label": "npm: compile"
+    },
+    {
+      "type": "npm",
+      "script": "vscode:prepublish",
+      "group": "build",
+      "problemMatcher": "$tsc",
+      "label": "npm: vscode:prepublish"
     }
   ]
 }

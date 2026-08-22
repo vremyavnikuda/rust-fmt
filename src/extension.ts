@@ -179,14 +179,11 @@ export function activate(context: vscode.ExtensionContext): void {
                                 if (token.isCancellationRequested) { break; }
                                 try {
                                     const document = await vscode.workspace.openTextDocument(uri);
-                                    const text = document.getText();
-                                    if (text.includes('macro_rules!')) {
-                                        const edits = await formatDocument(document, token, group.context);
-                                        if (edits.length > 0) {
-                                            const edit = new vscode.WorkspaceEdit();
-                                            edit.set(uri, edits);
-                                            await vscode.workspace.applyEdit(edit);
-                                        }
+                                    const edits = await formatDocument(document, token, group.context);
+                                    if (edits.length > 0) {
+                                        const edit = new vscode.WorkspaceEdit();
+                                        edit.set(uri, edits);
+                                        await vscode.workspace.applyEdit(edit);
                                     }
                                 } catch {
                                     // silent
@@ -457,6 +454,9 @@ function resetStatusBar(): void {
 
 async function maybePromptMacroFormatting(): Promise<void> {
     if (macroPromptInProgress) {
+        return;
+    }
+    if (vscode.workspace.getConfiguration('macroFormatter').get<boolean>('native')) {
         return;
     }
     if (extContext.globalState.get(MACRO_PROMPT_SUPPRESS_KEY)) {

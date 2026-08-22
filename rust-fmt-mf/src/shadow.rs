@@ -42,7 +42,7 @@ pub fn build_shadow_file(replaced_bodies: &[TokenStream]) -> (String, usize) {
 ///
 /// Each body string MUST have 4-space relative indentation for each level.
 /// rustfmt will adjust the absolute indentation to match the arm context.
-pub fn build_shadow_file_from_strings(body_strings: &[String]) -> String {
+pub fn build_shadow_file_from_strings(body_strings: &[String], marker_prefix: &str) -> String {
     let mut s = String::new();
     s.push_str("#![allow(unused_attributes, dead_code, unused_variables, unused_macros, unused_braces)]\n\n");
     for kind in &[
@@ -55,7 +55,7 @@ pub fn build_shadow_file_from_strings(body_strings: &[String]) -> String {
         "plus_semi",
     ] {
         s.push_str(&format!(
-            "macro_rules! __mf_rep_{kind} {{\n ($($t:tt)*) => {{ $($t)* }};\n}}\n",
+            "macro_rules! {marker_prefix}rep_{kind} {{\n ($($t:tt)*) => {{ $($t)* }};\n}}\n",
             kind = kind
         ));
     }

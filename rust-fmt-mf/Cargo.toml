@@ -18,3 +18,4 @@ proc-macro2 = "1"
 quote = "1"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
+ra-ap-rustc_lexer = "0.174.0"

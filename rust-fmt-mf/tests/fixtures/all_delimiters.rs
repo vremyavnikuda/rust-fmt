@@ -1,0 +1,3 @@
+macro_rules! paren (($x:expr)=>($x););
+macro_rules! bracket [($x:expr)=>[$x];];
+macro_rules! brace {($x:expr)=>{$x};}

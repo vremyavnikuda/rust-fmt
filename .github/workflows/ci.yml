@@ -22,3 +22,50 @@ jobs:
         run: npm run lint
       - name: Compile
         run: npm run compile
+      - name: Test extension
+        run: xvfb-run -a npm test
+
+  native:
+    name: Native formatter (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            binary: bin/linux-x64/rust-fmt-mf
+          - os: windows-latest
+            binary: bin/win32-x64/rust-fmt-mf.exe
+          - os: macos-latest
+            binary: bin/darwin-arm64/rust-fmt-mf
+          - os: macos-15-intel
+            binary: bin/darwin-x64/rust-fmt-mf
+          - os: ubuntu-24.04-arm
+            binary: bin/linux-arm64/rust-fmt-mf
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Rust
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup component add rustfmt
+      - name: Test Rust formatter
+        working-directory: rust-fmt-mf
+        run: cargo test --all-targets
+      - name: Test macro audit
+        run: python -m unittest discover -s rust-fmt-mf/tests -p "test_*.py" -v
+      - name: Build bundled binary
+        run: python scripts/build_current.py --release
+      - name: Check executable bit
+        if: runner.os != 'Windows'
+        run: test -x ${{ matrix.binary }}
+      - name: Validate bundled binary
+        run: python rust-fmt-mf/tests/run_fixtures.py --binary ${{ matrix.binary }}
+      - name: Upload macro diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macro-audit-${{ runner.os }}
+          path: rust-fmt-mf/target/macro-audit
+          if-no-files-found: ignore

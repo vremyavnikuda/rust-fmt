@@ -1,5 +1,5 @@
 macro_rules! field_accessor {
-    ($struct_name:ident, $($field:ident : $ty:ty),+) => {
+    ($struct_name:ident, $($field:ident: $ty:ty),+) => {
         impl $struct_name {
             $(
                 pub fn $field(&self) -> &$ty {
@@ -17,7 +17,9 @@ pub struct DataFields {
     pub active: bool,
 }
 
-field_accessor!( DataFields, name: String, age: u32, email: String, active: bool );
+field_accessor!(
+    DataFields, name: String, age: u32, email: String, active: bool
+);
 
 pub fn use_accessors(data: &DataFields) {
     println!(

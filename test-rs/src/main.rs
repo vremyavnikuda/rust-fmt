@@ -1,4 +1,5 @@
 mod examples;
+
 fn main() {
     let x = 1 + 2 * 3;
     println!("Hello, world!");
@@ -16,7 +17,7 @@ fn main() {
     examples::big_mess::terribly_formatted_function(1, 2, 3, 4, 5, 6);
     examples::complex_types::generic_function(42, "hello");
     examples::macro_heavy::use_bad_macros();
-        macro_rules! messy {
+    macro_rules! messy {
         ($x:expr) => {
             let y = $x + 1;
             let z = y * 2;
@@ -25,13 +26,16 @@ fn main() {
     }
     messy!(5);
 }
+
 fn add(a: i32, b: i32) -> i32 {
     a + b
 }
+
 pub struct Point {
     pub x: f64,
     pub y: f64,
 }
+
 impl Point {
     pub fn new(x: f64, y: f64) -> Self {
         Self { x, y }

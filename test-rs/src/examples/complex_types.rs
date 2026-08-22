@@ -116,7 +116,6 @@ where
 pub trait AssociatedTypes {
     type Output;
     type Error;
-
     fn process(&self) -> Result<Self::Output, Self::Error>;
 }
 
@@ -125,7 +124,6 @@ pub struct Processor;
 impl AssociatedTypes for Processor {
     type Output = String;
     type Error = i32;
-
     fn process(&self) -> Result<Self::Output, Self::Error> {
         Ok("done".to_string())
     }

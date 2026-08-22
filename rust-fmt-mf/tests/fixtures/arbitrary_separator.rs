@@ -1,0 +1,1 @@
+macro_rules! pipe_separator {($($x:ident)|*)=>{$($x)|*};}

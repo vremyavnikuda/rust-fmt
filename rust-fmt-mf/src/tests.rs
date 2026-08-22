@@ -638,3 +638,33 @@ macro_rules! five {
         "expected batched formatting of 5 independent macros to use at most 4 rustfmt calls, used {calls}"
     );
 }
+
+#[test]
+fn overlapping_definition_spans_do_not_panic_the_batch() {
+    // parse_macro_defs's attribute/doc-comment heuristic can pull a later
+    // definition's span.start backward into an earlier definition's
+    // trailing-comment line when that comment ends with `]` (it looks like
+    // an attribute such as `#[foo]` from the end). This produces a partial
+    // span overlap that survives the containment filter in parser.rs.
+    // Before the fix, feeding such an overlapping pair into
+    // format_definitions_batch's single apply_formatting call panicked
+    // (`byte range starts at X but ends at Y`) because apply_formatting
+    // assumes strictly ascending, non-overlapping spans. This must instead
+    // format cleanly, falling back to the one-call-per-definition path for
+    // just the overlapping definitions.
+    //
+    // This calls into code that increments the shared rustfmt-call counter,
+    // so it must hold COUNTER_TEST_LOCK like every other test that does,
+    // or it can race against formatting_many_independent_macros_uses_few_rustfmt_calls
+    // under default-parallel `cargo test` and corrupt its measurement.
+    let _guard = COUNTER_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let source = "macro_rules! a {\n    () => { 1 };\n} // see [docs]\n\nmacro_rules! b {\n    () => { 2 };\n}\n";
+    let formatted = super::format_source(source, "rustfmt", "2021", None)
+        .expect("overlapping definitions must format without erroring or panicking");
+    assert!(formatted.contains("macro_rules! a"));
+    assert!(formatted.contains("macro_rules! b"));
+    assert!(formatted.contains("// see [docs]"));
+    // Must be idempotent too, not just non-panicking on the first pass.
+    let second = super::format_source(&formatted, "rustfmt", "2021", None).unwrap();
+    assert_eq!(formatted, second);
+}

@@ -1144,23 +1144,37 @@ fn format_source_once(
     // Phase 1: definitions that cannot be deep-formatted get a pure string
     // transform only (no rustfmt call). Reverse order keeps byte offsets of
     // not-yet-processed definitions valid while `text` is being edited.
+    let mut phase1_changed = false;
     for (index, definition) in definitions.iter().enumerate().rev() {
         if supports_deep_format(source, definition) {
             continue;
         }
         let candidate = format_definition_without_brace_bodies(&text, definition);
         match ensure_tokens_preserved(&text, &candidate) {
-            Ok(()) => text = candidate,
+            Ok(()) => {
+                text = candidate;
+                phase1_changed = true;
+            }
             Err(error) => {
-                skipped_reasons[index] = Some(format!("lossless check failed: {error}"));
+                if let Some(slot) = skipped_reasons.get_mut(index) {
+                    *slot = Some(format!("lossless check failed: {error}"));
+                }
             }
         }
     }
 
-    // Phase 2: deep-formattable definitions. Re-parse since phase 1 may have
-    // shifted byte offsets; phase 1 never adds, removes, or reorders
-    // definitions, so index i in `definitions` still matches index i here.
-    let refreshed_definitions = parse_macro_defs(&text)?;
+    // Phase 2: deep-formattable definitions. Only re-parse when phase 1
+    // actually rewrote something: a re-parse is itself a hard-failure
+    // surface, and if nothing changed the original spans are still valid.
+    // Phase 1 never adds, removes, or reorders definitions, so index i in
+    // `definitions` still matches index i here (checked defensively below).
+    let refreshed_definitions: Vec<crate::types::MacroDef> = if phase1_changed {
+        parse_macro_defs(&text)?
+    } else {
+        definitions.clone()
+    };
+    debug_assert_eq!(refreshed_definitions.len(), definitions.len());
+
     let deep_definitions: Vec<(usize, &crate::types::MacroDef)> = refreshed_definitions
         .iter()
         .enumerate()
@@ -1168,30 +1182,89 @@ fn format_source_once(
         .collect();
 
     if !deep_definitions.is_empty() {
-        let just_defs: Vec<&crate::types::MacroDef> = deep_definitions
-            .iter()
-            .map(|(_, definition)| *definition)
-            .collect();
-        let batch_result =
-            format_definitions_batch(&text, &just_defs, rustfmt_path, edition, config_path);
-        match accepted_batch_result(&text, batch_result) {
-            Some(candidate) => text = candidate,
-            None => {
-                // Fall back to the proven one-call-per-definition path so a
-                // single problematic definition among many healthy ones is
-                // still isolated and reported SKIPPED individually.
-                for &(index, definition) in deep_definitions.iter().rev() {
-                    match format_definition_once(&text, definition, rustfmt_path, edition, config_path) {
-                        Ok(candidate) => match ensure_tokens_preserved(&text, &candidate) {
-                            Ok(()) => text = candidate,
+        // apply_formatting's multi-definition batch path assumes strictly
+        // ascending, non-overlapping definition spans (each definition's
+        // span.start must be >= the previous one's span.end). That
+        // normally holds, but parse_macro_defs's attribute/doc-comment
+        // heuristic can pull a later definition's span.start backward into
+        // an earlier definition's trailing-comment line (e.g. a `} // [x]`
+        // closing line immediately followed by another `macro_rules!`),
+        // producing a partial overlap that survives the containment
+        // filter. Reduce the batch to a strictly non-overlapping, ascending
+        // subset and route any excluded (overlapping) definitions through
+        // the proven one-call-per-definition path instead, so a rare
+        // overlap degrades to today's per-definition behavior for just the
+        // affected definitions rather than panicking the whole batch.
+        let mut batchable: Vec<(usize, &crate::types::MacroDef)> = Vec::new();
+        let mut excluded_indices: Vec<usize> = Vec::new();
+        let mut last_end: Option<usize> = None;
+        for &(index, definition) in &deep_definitions {
+            let overlaps_previous = last_end.is_some_and(|end| definition.span.start < end);
+            if overlaps_previous {
+                excluded_indices.push(index);
+            } else {
+                last_end = Some(definition.span.end);
+                batchable.push((index, definition));
+            }
+        }
+
+        if !batchable.is_empty() {
+            let just_defs: Vec<&crate::types::MacroDef> = batchable
+                .iter()
+                .map(|(_, definition)| *definition)
+                .collect();
+            let batch_result =
+                format_definitions_batch(&text, &just_defs, rustfmt_path, edition, config_path);
+            match accepted_batch_result(&text, batch_result) {
+                Some(candidate) => text = candidate,
+                None => {
+                    // Fall back to the proven one-call-per-definition path so a
+                    // single problematic definition among many healthy ones is
+                    // still isolated and reported SKIPPED individually.
+                    for &(index, definition) in batchable.iter().rev() {
+                        match format_definition_once(&text, definition, rustfmt_path, edition, config_path) {
+                            Ok(candidate) => match ensure_tokens_preserved(&text, &candidate) {
+                                Ok(()) => text = candidate,
+                                Err(error) => {
+                                    if let Some(slot) = skipped_reasons.get_mut(index) {
+                                        *slot = Some(format!("lossless check failed: {error}"));
+                                    }
+                                }
+                            },
                             Err(error) => {
-                                skipped_reasons[index] =
-                                    Some(format!("lossless check failed: {error}"));
+                                if let Some(slot) = skipped_reasons.get_mut(index) {
+                                    *slot = Some(format!("shadow formatting failed: {error}"));
+                                }
                             }
-                        },
+                        }
+                    }
+                }
+            }
+        }
+
+        if !excluded_indices.is_empty() {
+            // The batch step above (if it ran) may have shifted byte
+            // offsets ahead of these definitions in the file, so re-parse
+            // to get their current spans rather than reusing stale ones
+            // captured before that edit.
+            let current_definitions = parse_macro_defs(&text)?;
+            debug_assert_eq!(current_definitions.len(), refreshed_definitions.len());
+            for &index in excluded_indices.iter().rev() {
+                let Some(definition) = current_definitions.get(index) else {
+                    continue;
+                };
+                match format_definition_once(&text, definition, rustfmt_path, edition, config_path) {
+                    Ok(candidate) => match ensure_tokens_preserved(&text, &candidate) {
+                        Ok(()) => text = candidate,
                         Err(error) => {
-                            skipped_reasons[index] =
-                                Some(format!("shadow formatting failed: {error}"));
+                            if let Some(slot) = skipped_reasons.get_mut(index) {
+                                *slot = Some(format!("lossless check failed: {error}"));
+                            }
+                        }
+                    },
+                    Err(error) => {
+                        if let Some(slot) = skipped_reasons.get_mut(index) {
+                            *slot = Some(format!("shadow formatting failed: {error}"));
                         }
                     }
                 }

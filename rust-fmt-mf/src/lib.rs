@@ -1012,6 +1012,40 @@ fn accepted_batch_result(original: &str, batch_result: anyhow::Result<String>) -
     }
 }
 
+/// Extract, normalize, and pre-format one macro arm's shadow-file body
+/// fragment. Shared by `format_definition_once` (single-definition path)
+/// and `format_definitions_batch` (multi-definition path) so the two never
+/// drift out of sync with each other.
+fn build_arm_shadow_fragment(
+    source: &str,
+    arm: &crate::types::MacroArm,
+    marker_prefix: &str,
+    rustfmt_path: &str,
+    edition: &str,
+    config_path: Option<&str>,
+) -> (String, Mapping) {
+    let arm_body_text = &source[arm.body_span.clone()];
+    let body_text = arm_body_text.trim();
+    let inner = if body_text.starts_with("{{") && body_text.ends_with("}}") {
+        &body_text[2..body_text.len() - 2]
+    } else {
+        &body_text[1..body_text.len() - 1]
+    };
+    let trimmed = inner.strip_prefix('\n').unwrap_or(inner);
+    let inner_text = trimmed.strip_suffix('\n').unwrap_or(trimmed);
+    let mut mapping = Mapping::with_prefix(marker_prefix.to_string());
+    let mut inner_str = normalize_body_indent(inner_text);
+    inner_str = replace_macro_syntax_text(&inner_str, &mut mapping);
+    inner_str = preformat_rep_bodies(
+        &inner_str,
+        &format!("{marker_prefix}rep_"),
+        rustfmt_path,
+        edition,
+        config_path,
+    );
+    (inner_str, mapping)
+}
+
 fn format_definition_once(
     source: &str,
     definition: &crate::types::MacroDef,
@@ -1026,21 +1060,10 @@ fn format_definition_once(
     let mut all_mappings: Vec<Mapping> = Vec::new();
     let marker_prefix = unique_prefix(source);
     for arm in &definition.arms {
-        let arm_body_text = &source[arm.body_span.clone()];
-        let body_text = arm_body_text.trim();
-        let inner = if body_text.starts_with("{{") && body_text.ends_with("}}") {
-            &body_text[2..body_text.len() - 2]
-        } else {
-            &body_text[1..body_text.len() - 1]
-        };
-        let trimmed = inner.strip_prefix('\n').unwrap_or(inner);
-        let inner_text = trimmed.strip_suffix('\n').unwrap_or(trimmed);
-        let mut mapping = Mapping::with_prefix(marker_prefix.clone());
-        let mut inner_str = normalize_body_indent(inner_text);
-        inner_str = replace_macro_syntax_text(&inner_str, &mut mapping);
-        inner_str = preformat_rep_bodies(
-            &inner_str,
-            &format!("{marker_prefix}rep_"),
+        let (inner_str, mapping) = build_arm_shadow_fragment(
+            source,
+            arm,
+            &marker_prefix,
             rustfmt_path,
             edition,
             config_path,
@@ -1065,6 +1088,49 @@ fn supports_deep_format(source: &str, definition: &crate::types::MacroDef) -> bo
     })
 }
 
+/// Format every arm of every given definition in one combined shadow file
+/// and one `rustfmt` call, instead of one call per definition. Definitions
+/// must already be filtered to `supports_deep_format` and given in
+/// ascending source-position order (the natural order `parse_macro_defs`
+/// returns).
+fn format_definitions_batch(
+    source: &str,
+    definitions: &[&crate::types::MacroDef],
+    rustfmt_path: &str,
+    edition: &str,
+    config_path: Option<&str>,
+) -> anyhow::Result<String> {
+    let marker_prefix = unique_prefix(source);
+    let mut all_replaced_bodies_str: Vec<String> = Vec::new();
+    let mut all_mappings: Vec<Mapping> = Vec::new();
+    for definition in definitions {
+        for arm in &definition.arms {
+            let (inner_str, mapping) = build_arm_shadow_fragment(
+                source,
+                arm,
+                &marker_prefix,
+                rustfmt_path,
+                edition,
+                config_path,
+            );
+            all_replaced_bodies_str.push(inner_str);
+            all_mappings.push(mapping);
+        }
+    }
+    let shadow_code = build_shadow_file_from_strings(&all_replaced_bodies_str, &marker_prefix);
+    let formatted_shadow = run_rustfmt(&shadow_code, rustfmt_path, edition, config_path)?;
+    let owned_definitions: Vec<crate::types::MacroDef> = definitions
+        .iter()
+        .map(|definition| (*definition).clone())
+        .collect();
+    Ok(apply_formatting(
+        source,
+        &owned_definitions,
+        &formatted_shadow,
+        &all_mappings,
+    ))
+}
+
 fn format_source_once(
     source: &str,
     rustfmt_path: &str,
@@ -1075,16 +1141,60 @@ fn format_source_once(
     let mut text = source.to_string();
     let mut skipped_reasons = vec![None; definitions.len()];
 
+    // Phase 1: definitions that cannot be deep-formatted get a pure string
+    // transform only (no rustfmt call). Reverse order keeps byte offsets of
+    // not-yet-processed definitions valid while `text` is being edited.
     for (index, definition) in definitions.iter().enumerate().rev() {
-        match format_definition_once(&text, definition, rustfmt_path, edition, config_path) {
-            Ok(candidate) => match ensure_tokens_preserved(&text, &candidate) {
-                Ok(()) => text = candidate,
-                Err(error) => {
-                    skipped_reasons[index] = Some(format!("lossless check failed: {error}"));
-                }
-            },
+        if supports_deep_format(source, definition) {
+            continue;
+        }
+        let candidate = format_definition_without_brace_bodies(&text, definition);
+        match ensure_tokens_preserved(&text, &candidate) {
+            Ok(()) => text = candidate,
             Err(error) => {
-                skipped_reasons[index] = Some(format!("shadow formatting failed: {error}"));
+                skipped_reasons[index] = Some(format!("lossless check failed: {error}"));
+            }
+        }
+    }
+
+    // Phase 2: deep-formattable definitions. Re-parse since phase 1 may have
+    // shifted byte offsets; phase 1 never adds, removes, or reorders
+    // definitions, so index i in `definitions` still matches index i here.
+    let refreshed_definitions = parse_macro_defs(&text)?;
+    let deep_definitions: Vec<(usize, &crate::types::MacroDef)> = refreshed_definitions
+        .iter()
+        .enumerate()
+        .filter(|(_, definition)| supports_deep_format(&text, definition))
+        .collect();
+
+    if !deep_definitions.is_empty() {
+        let just_defs: Vec<&crate::types::MacroDef> = deep_definitions
+            .iter()
+            .map(|(_, definition)| *definition)
+            .collect();
+        let batch_result =
+            format_definitions_batch(&text, &just_defs, rustfmt_path, edition, config_path);
+        match accepted_batch_result(&text, batch_result) {
+            Some(candidate) => text = candidate,
+            None => {
+                // Fall back to the proven one-call-per-definition path so a
+                // single problematic definition among many healthy ones is
+                // still isolated and reported SKIPPED individually.
+                for &(index, definition) in deep_definitions.iter().rev() {
+                    match format_definition_once(&text, definition, rustfmt_path, edition, config_path) {
+                        Ok(candidate) => match ensure_tokens_preserved(&text, &candidate) {
+                            Ok(()) => text = candidate,
+                            Err(error) => {
+                                skipped_reasons[index] =
+                                    Some(format!("lossless check failed: {error}"));
+                            }
+                        },
+                        Err(error) => {
+                            skipped_reasons[index] =
+                                Some(format!("shadow formatting failed: {error}"));
+                        }
+                    }
+                }
             }
         }
     }

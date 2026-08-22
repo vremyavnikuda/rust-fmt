@@ -6,7 +6,7 @@ static RUSTFMT_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 /// Number of times `run_rustfmt`/`run_rustfmt_no_macro` have successfully
 /// spawned a `rustfmt` process since the last `reset_rustfmt_call_count()`.
-/// Test-only instrumentation for asserting on subprocess-spawn counts
+/// Instrumentation for asserting on subprocess-spawn counts in tests
 /// instead of flaky wall-clock timing.
 pub fn rustfmt_call_count() -> usize {
     RUSTFMT_CALL_COUNT.load(Ordering::SeqCst)

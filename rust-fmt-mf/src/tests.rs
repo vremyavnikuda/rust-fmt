@@ -3,9 +3,15 @@ use crate::parser::*;
 use crate::replacer::*;
 use crate::shadow::*;
 use crate::types::Mapping;
+use std::sync::Mutex;
+
+// Lock to serialize counter-sensitive tests, preventing concurrent mutations
+// of the global RUSTFMT_CALL_COUNT by other tests running in parallel
+static COUNTER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn marker_collision_is_idempotent() {
+    let _guard = COUNTER_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let source = include_str!("../tests/fixtures/marker_collision.rs");
     let first = super::format_source_once(source, "rustfmt", "2021", None).unwrap();
     let second = super::format_source_once(&first.text, "rustfmt", "2021", None).unwrap();
@@ -14,6 +20,7 @@ fn marker_collision_is_idempotent() {
 
 #[test]
 fn real_macro_edge_cases_are_idempotent() {
+    let _guard = COUNTER_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let source = include_str!("../tests/fixtures/real_macro_edge_cases.rs");
     let first = super::format_source_once(source, "rustfmt", "2021", None).unwrap();
     let second = super::format_source_once(&first.text, "rustfmt", "2021", None).unwrap();
@@ -22,6 +29,7 @@ fn real_macro_edge_cases_are_idempotent() {
 
 #[test]
 fn real_main_fmt_is_idempotent() {
+    let _guard = COUNTER_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let source = include_str!("../tests/fixtures/real_main_fmt.rs");
     let first = super::format_source_once(source, "rustfmt", "2021", None).unwrap();
     let second = super::format_source_once(&first.text, "rustfmt", "2021", None).unwrap();
@@ -553,6 +561,7 @@ fn test_shadow_has_allow_attributes() {
 
 #[test]
 fn rustfmt_call_count_tracks_successful_spawns() {
+    let _guard = COUNTER_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     crate::formatter::reset_rustfmt_call_count();
     assert_eq!(crate::formatter::rustfmt_call_count(), 0);
     crate::formatter::run_rustfmt("fn main() {}", "rustfmt", "2021", None).unwrap();

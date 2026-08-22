@@ -22,12 +22,35 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let mut source = String::new();
     io::stdin().read_to_string(&mut source)?;
-    let formatted = rust_fmt_mf::format_source(
+    let result = rust_fmt_mf::format_source_with_report(
         &source,
         &cli.rustfmt_path,
         &cli.edition,
         cli.config_path.as_deref(),
     )?;
-    io::stdout().write_all(formatted.as_bytes())?;
+    let mut stderr = io::stderr().lock();
+    for outcome in &result.macros {
+        let status = match &outcome.status {
+            rust_fmt_mf::types::MacroStatus::Formatted => "FORMATTED",
+            rust_fmt_mf::types::MacroStatus::Unchanged => "UNCHANGED",
+            rust_fmt_mf::types::MacroStatus::Skipped { reason } => {
+                writeln!(
+                    stderr,
+                    "rust-fmt-mf\tSKIPPED\t{}\t{}..{}\t{}",
+                    outcome.name,
+                    outcome.span.start,
+                    outcome.span.end,
+                    reason.replace(['\r', '\n', '\t'], " ")
+                )?;
+                continue;
+            }
+        };
+        writeln!(
+            stderr,
+            "rust-fmt-mf\t{}\t{}\t{}..{}",
+            status, outcome.name, outcome.span.start, outcome.span.end
+        )?;
+    }
+    io::stdout().write_all(result.text.as_bytes())?;
     Ok(())
 }

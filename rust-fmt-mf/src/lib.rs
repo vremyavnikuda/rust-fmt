@@ -9,11 +9,14 @@ pub mod types;
 mod tests;
 
 use crate::formatter::{run_rustfmt, run_rustfmt_no_macro};
-use crate::mapper::apply_formatting;
+use crate::mapper::{apply_formatting, format_definition_without_brace_bodies};
 use crate::parser::parse_macro_defs;
 use crate::replacer::replace_macro_syntax_text;
 use crate::shadow::build_shadow_file_from_strings;
-use crate::types::Mapping;
+use crate::types::{FormatResult, MacroOutcome, MacroStatus, Mapping};
+use ra_ap_rustc_lexer::{tokenize, FrontmatterAllowed, TokenKind};
+use std::collections::HashSet;
+use std::ops::Range;
 
 fn try_format_as_mod(
     inner: &str,
@@ -70,14 +73,14 @@ struct RepMarker {
     rep_id: usize,
 }
 
-fn find_rep_markers(body_str: &str) -> Vec<RepMarker> {
+fn find_rep_markers(body_str: &str, repetition_prefix: &str) -> Vec<RepMarker> {
     let bytes = body_str.as_bytes();
     let mut markers = Vec::new();
     let mut i = 0;
     let mut rep_id = 0;
     while i < bytes.len() {
-        if body_str[i..].starts_with("__mf_rep_") {
-            let kind_start = i + "__mf_rep_".len();
+        if body_str[i..].starts_with(repetition_prefix) {
+            let kind_start = i + repetition_prefix.len();
             let rest = &body_str[kind_start..];
             let kind_end = match rest.find('!') {
                 Some(pos) => kind_start + pos,
@@ -117,18 +120,23 @@ fn find_rep_markers(body_str: &str) -> Vec<RepMarker> {
             rep_id += 1;
             i = close_pos;
         } else {
-            i += 1;
+            i += body_str[i..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(1);
         }
     }
     markers
 }
 fn preformat_rep_bodies(
     body_str: &str,
+    repetition_prefix: &str,
     rustfmt_path: &str,
     edition: &str,
     config_path: Option<&str>,
 ) -> String {
-    let markers = find_rep_markers(body_str);
+    let markers = find_rep_markers(body_str, repetition_prefix);
     if markers.is_empty() {
         return body_str.to_string();
     }
@@ -137,9 +145,12 @@ fn preformat_rep_bodies(
         let inner = result[m.inner_start..m.inner_end].to_string();
         let formatted = try_format_as_mod(&inner, m.rep_id, rustfmt_path, edition, config_path)
             .or_else(|| try_format_as_fn(&inner, m.rep_id, rustfmt_path, edition, config_path));
-        if let Some(fmt) = formatted {
+        if let Some(fmt) = formatted.filter(|fmt| ensure_tokens_preserved(&inner, fmt).is_ok()) {
             if fmt.contains('\n') {
-                result.replace_range(m.inner_start..m.inner_end, &format!("{}\n", fmt));
+                result.replace_range(
+                    m.inner_start..m.inner_end,
+                    &format!("\n{}\n", fmt.trim_matches('\n')),
+                );
             } else {
                 result.replace_range(m.inner_start..m.inner_end, &fmt);
             }
@@ -229,207 +240,616 @@ fn normalize_body_indent(body: &str) -> String {
     result.join("\n")
 }
 
-/// Re-indent the body content inside macro invocations `ident!(...)`, `ident!{...}`, `ident![...]`.
-///
-/// rustfmt does not deeply format macro invocation bodies (they may use DSL syntax
-/// that isn't valid Rust). We at least fix the indentation for readability.
-fn reindent_invocation_bodies(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut result = String::with_capacity(text.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        // Look for `ident!(` / `ident!{` / `ident![` with optional whitespace between ! and delimiter
-        if i + 2 < bytes.len()
-            && bytes[i + 1] == b'!'
-            && (bytes[i].is_ascii_alphabetic() || bytes[i] == b'_')
-        {
-            // Check for opener after optional whitespace
-            let mut opener_pos = i + 2;
-            while opener_pos < bytes.len() && bytes[opener_pos] == b' ' {
-                opener_pos += 1;
-            }
-            if opener_pos < bytes.len()
-                && (bytes[opener_pos] == b'('
-                    || bytes[opener_pos] == b'{'
-                    || bytes[opener_pos] == b'[')
-            {
-                let ident_start = i;
-                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
-                    i += 1;
-                }
-                result.push_str(&text[ident_start..i]);
-                if i < bytes.len() && bytes[i] == b'!' {
-                    result.push('!');
-                    i += 1;
-                }
-                // Preserve whitespace between ! and opener
-                while i < bytes.len() && bytes[i] == b' ' {
-                    result.push(' ');
-                    i += 1;
-                }
-                let open = bytes[i];
-                let close: u8 = match open {
-                    b'(' => b')',
-                    b'{' => b'}',
-                    _ => b']',
-                };
-                result.push(open as char);
-                i += 1;
-                // Find matching close
-                let body_start = i;
-                let mut depth = 1u32;
-                while i < bytes.len() && depth > 0 {
-                    if bytes[i] == open {
-                        depth += 1;
-                    } else if bytes[i] == close {
-                        depth -= 1;
-                    } else if bytes[i] == b'"' {
-                        i += 1;
-                        while i < bytes.len() && bytes[i] != b'"' {
-                            if bytes[i] == b'\\' {
-                                i += 1;
-                            }
-                            i += 1;
-                        }
-                    }
-                    i += 1;
-                }
-                let body_end = if depth == 0 { i - 1 } else { i };
-                let body = &text[body_start..body_end];
-                // Only re-indent multi-line bodies
-                if !body.contains('\n') {
-                    result.push_str(body);
-                    result.push(close as char);
-                    continue;
-                }
-                // Compute base indent of the invocation line
-                let line_start = text[..body_start].rfind('\n').map(|p| p + 1).unwrap_or(0);
-                let inv_line = &text[line_start..body_start];
-                let base_indent = inv_line.len() - inv_line.trim_start().len();
-                let lines: Vec<&str> = body.lines().collect();
-                // If body is multi-line, force opener onto its own line
-                // even when the first content starts with spaces (not \n).
-                // This fixes cases like `ident!(    content { ... } )`
-                // where the body is clearly multi-line but lacks a leading newline.
-                let body_starts_with_nl = body.starts_with('\n');
-                let body_is_multi_line = !body_starts_with_nl && body.contains('\n');
-                // Find last non-empty line index (to avoid trailing blank lines)
-                let last_content_idx = lines
-                    .iter()
-                    .rposition(|l| !l.trim().is_empty())
-                    .unwrap_or(lines.len().saturating_sub(1));
-                let mut formatted = String::new();
-                let mut brace_depth = 0u32;
-                let mut is_first_content = true;
-                let mut in_where = false;
-                for (idx, line) in lines.iter().enumerate() {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        if idx > 0 && idx < last_content_idx {
-                            formatted.push('\n');
-                        }
-                        continue;
-                    }
-                    let open_count = trimmed.matches('{').count() as u32;
-                    let close_count = trimmed.matches('}').count() as u32;
-                    let depth_before = brace_depth;
-                    // Determine indent level:
-                    //   Line starting with `}` → depth AFTER closing (aligns `}` with matching `{`)
-                    //   Line starting with `{` → depth BEFORE opening (`{` stays at current level)
-                    //   Other lines              → depth at start of line
-                    let indent_depth = if trimmed.starts_with('}') {
-                        depth_before.saturating_sub(close_count)
-                    } else if trimmed.starts_with('{') {
-                        depth_before
-                    } else {
-                        depth_before
-                    };
-                    brace_depth = depth_before + open_count - close_count;
-                    // `where` clause: lines after `where` get +1 indent until `{`
-                    if trimmed == "where" {
-                        in_where = true;
-                    }
-                    let extra_where = if in_where
-                        && trimmed != "where"
-                        && !trimmed.starts_with('{')
-                        && !trimmed.starts_with('}')
-                    {
-                        1
-                    } else {
-                        0
-                    };
-                    if trimmed.starts_with('{') {
-                        in_where = false;
-                    }
-                    let indent = base_indent + 4 + (indent_depth as usize) * 4 + extra_where * 4;
-                    if is_first_content {
-                        if body_starts_with_nl || body_is_multi_line {
-                            formatted.push('\n');
-                            formatted.push_str(&" ".repeat(indent));
-                        } else {
-                            formatted.push_str(&" ".repeat(indent));
-                        }
-                        formatted.push_str(trimmed);
-                        is_first_content = false;
-                    } else {
-                        formatted.push('\n');
-                        formatted.push_str(&" ".repeat(indent));
-                        formatted.push_str(trimmed);
-                    }
-                }
-                // If the body is multi-line, emit the close delimiter on its own line
-                // at base_indent (same level as the opening `ident!(`).
-                let has_line_break = body.contains('\n');
-                if has_line_break {
-                    formatted.push('\n');
-                    formatted.push_str(&" ".repeat(base_indent));
-                }
-                result.push_str(&formatted);
-                result.push(close as char);
-                continue;
-            }
-        }
-        result.push(bytes[i] as char);
-        i += 1;
-    }
-    result
-}
-
 fn final_format_pass(
     source: &str,
     rustfmt_path: &str,
     edition: &str,
     config_path: Option<&str>,
 ) -> anyhow::Result<String> {
-    let macro_defs = parse_macro_defs(source)?;
-    if macro_defs.is_empty() {
-        let formatted = run_rustfmt_no_macro(source, rustfmt_path, edition, config_path)?;
-        return Ok(reindent_invocation_bodies(&formatted));
+    let definitions = parse_macro_defs(source)?;
+    let skipped = definitions
+        .iter()
+        .filter(|definition| !supports_deep_format(source, definition))
+        .collect::<Vec<_>>();
+    let mut masked = source.to_string();
+    let marker = unique_skip_marker(source);
+    for (index, definition) in skipped.iter().enumerate().rev() {
+        masked.replace_range(definition.span.clone(), &format!("/*{marker}{index}*/"));
     }
-    let mut text = source.to_string();
-    for (i, def) in macro_defs.iter().enumerate().rev() {
-        let placeholder = format!("/**** __mf_nm_{i}__ ****/");
-        text.replace_range(def.span.clone(), &placeholder);
+    let mut formatted = run_rustfmt_no_macro(&masked, rustfmt_path, edition, config_path)?;
+    for (index, definition) in skipped.iter().enumerate() {
+        let placeholder = format!("/*{marker}{index}*/");
+        let position = formatted
+            .find(&placeholder)
+            .ok_or_else(|| anyhow::anyhow!("rustfmt removed a skipped macro marker"))?;
+        formatted.replace_range(
+            position..position + placeholder.len(),
+            &source[definition.span.clone()],
+        );
     }
-    let formatted = run_rustfmt_no_macro(&text, rustfmt_path, edition, config_path)?;
-    let mut result = formatted;
-    for (i, def) in macro_defs.iter().enumerate() {
-        let placeholder = format!("/**** __mf_nm_{i}__ ****/");
-        let orig_def = &source[def.span.clone()];
-        if let Some(pos) = result.find(&placeholder) {
-            let line_start = result[..pos].rfind('\n').map(|p| p + 1).unwrap_or(0);
-            if result[line_start..pos]
-                .chars()
-                .all(|c| c == ' ' || c == '\t')
-            {
-                result.replace_range(line_start..pos + placeholder.len(), orig_def);
-            } else {
-                result.replace_range(pos..pos + placeholder.len(), orig_def);
+    let invocations = format_macro_invocations(&formatted, rustfmt_path, edition, config_path)?;
+    Ok(normalize_layout_gaps(&invocations))
+}
+
+fn unique_skip_marker(source: &str) -> String {
+    (0..)
+        .map(|index| format!("__m_skip_{index}_"))
+        .find(|candidate| !source.contains(candidate))
+        .expect("infinite marker namespace")
+}
+
+#[derive(Clone)]
+struct LayoutToken {
+    kind: TokenKind,
+    span: Range<usize>,
+}
+
+fn layout_tokens(source: &str) -> Vec<LayoutToken> {
+    let mut offset = 0usize;
+    tokenize(source, FrontmatterAllowed::Yes)
+        .map(|token| {
+            let start = offset;
+            offset += token.len as usize;
+            LayoutToken {
+                kind: token.kind,
+                span: start..offset,
+            }
+        })
+        .collect()
+}
+
+fn is_layout_trivia(kind: TokenKind) -> bool {
+    matches!(kind, TokenKind::Whitespace)
+}
+
+fn next_layout_token(tokens: &[LayoutToken], from: usize) -> Option<usize> {
+    (from..tokens.len()).find(|&index| !is_layout_trivia(tokens[index].kind))
+}
+
+fn matching_layout_delimiter(tokens: &[LayoutToken], open: usize) -> Option<usize> {
+    let expected = match tokens[open].kind {
+        TokenKind::OpenParen => TokenKind::CloseParen,
+        TokenKind::OpenBrace => TokenKind::CloseBrace,
+        TokenKind::OpenBracket => TokenKind::CloseBracket,
+        _ => return None,
+    };
+    let mut stack = vec![expected];
+    for (index, token) in tokens.iter().enumerate().skip(open + 1) {
+        let close = match token.kind {
+            TokenKind::OpenParen => Some(TokenKind::CloseParen),
+            TokenKind::OpenBrace => Some(TokenKind::CloseBrace),
+            TokenKind::OpenBracket => Some(TokenKind::CloseBracket),
+            _ => None,
+        };
+        if let Some(close) = close {
+            stack.push(close);
+        } else if matches!(
+            token.kind,
+            TokenKind::CloseParen | TokenKind::CloseBrace | TokenKind::CloseBracket
+        ) {
+            if stack.pop()? != token.kind {
+                return None;
+            }
+            if stack.is_empty() {
+                return Some(index);
             }
         }
     }
-    result = reindent_invocation_bodies(&result);
+    None
+}
+
+struct Invocation {
+    name_start: usize,
+    bang_end: usize,
+    open_start: usize,
+    inner: Range<usize>,
+    end: usize,
+    open: char,
+}
+
+fn macro_invocations(source: &str, macro_names: &HashSet<String>) -> Vec<Invocation> {
+    let tokens = layout_tokens(source);
+    let mut invocations: Vec<Invocation> = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        if !matches!(token.kind, TokenKind::Ident | TokenKind::RawIdent) {
+            continue;
+        }
+        let name = &source[token.span.clone()];
+        if !macro_names.contains(name) && is_builtin_macro(name) {
+            continue;
+        }
+        let Some(bang) = next_layout_token(&tokens, index + 1) else {
+            continue;
+        };
+        if tokens[bang].kind != TokenKind::Bang {
+            continue;
+        }
+        let Some(open) = next_layout_token(&tokens, bang + 1) else {
+            continue;
+        };
+        let Some(close) = matching_layout_delimiter(&tokens, open) else {
+            continue;
+        };
+        let candidate = Invocation {
+            name_start: token.span.start,
+            bang_end: tokens[bang].span.end,
+            open_start: tokens[open].span.start,
+            inner: tokens[open].span.end..tokens[close].span.start,
+            end: tokens[close].span.end,
+            open: match tokens[open].kind {
+                TokenKind::OpenBrace => '{',
+                TokenKind::OpenBracket => '[',
+                _ => '(',
+            },
+        };
+        if invocations
+            .last()
+            .is_some_and(|parent| candidate.end <= parent.end)
+        {
+            continue;
+        }
+        invocations.push(candidate);
+    }
+    invocations
+}
+
+fn is_builtin_macro(name: &str) -> bool {
+    matches!(
+        name,
+        "assert"
+            | "assert_eq"
+            | "assert_ne"
+            | "cfg"
+            | "column"
+            | "compile_error"
+            | "concat"
+            | "dbg"
+            | "debug_assert"
+            | "debug_assert_eq"
+            | "debug_assert_ne"
+            | "env"
+            | "eprint"
+            | "eprintln"
+            | "file"
+            | "format"
+            | "format_args"
+            | "include"
+            | "include_bytes"
+            | "include_str"
+            | "line"
+            | "matches"
+            | "module_path"
+            | "option_env"
+            | "panic"
+            | "print"
+            | "println"
+            | "stringify"
+            | "thread_local"
+            | "todo"
+            | "unimplemented"
+            | "unreachable"
+            | "vec"
+            | "write"
+            | "writeln"
+    )
+}
+
+fn format_macro_invocations(
+    source: &str,
+    rustfmt_path: &str,
+    edition: &str,
+    config_path: Option<&str>,
+) -> anyhow::Result<String> {
+    let mut result = source.to_string();
+    let macro_names = parse_macro_defs(source)?
+        .into_iter()
+        .map(|definition| definition.name)
+        .collect::<HashSet<_>>();
+    for invocation in macro_invocations(source, &macro_names).into_iter().rev() {
+        let inner = &source[invocation.inner.clone()];
+        if inner.trim().is_empty() || contains_rust_comment(inner) {
+            continue;
+        }
+        let line_start = source[..invocation.name_start]
+            .rfind('\n')
+            .map_or(0, |position| position + 1);
+        let base_indent = source[line_start..invocation.name_start]
+            .chars()
+            .take_while(|character| character.is_whitespace())
+            .count();
+        let prefix_width = source[line_start..invocation.inner.start].chars().count();
+        let formatted = format_invocation_inner(
+            inner,
+            invocation.open,
+            base_indent,
+            prefix_width,
+            rustfmt_path,
+            edition,
+            config_path,
+        );
+        result.replace_range(invocation.inner, &formatted);
+        result.replace_range(
+            invocation.bang_end..invocation.open_start,
+            if invocation.open == '{' { " " } else { "" },
+        );
+    }
+    ensure_tokens_preserved(source, &result)?;
     Ok(result)
+}
+
+fn contains_rust_comment(source: &str) -> bool {
+    tokenize(source, FrontmatterAllowed::No).any(|token| {
+        matches!(
+            token.kind,
+            TokenKind::LineComment { .. } | TokenKind::BlockComment { .. }
+        )
+    })
+}
+
+fn format_invocation_inner(
+    inner: &str,
+    open: char,
+    base_indent: usize,
+    prefix_width: usize,
+    rustfmt_path: &str,
+    edition: &str,
+    config_path: Option<&str>,
+) -> String {
+    let trimmed = inner.trim();
+    let looks_like_rust = trimmed.starts_with("#")
+        || trimmed.starts_with("pub ")
+        || trimmed.starts_with("fn ")
+        || trimmed.starts_with("struct ")
+        || trimmed.starts_with("enum ")
+        || trimmed.starts_with("impl ")
+        || trimmed.starts_with("let ")
+        || trimmed.starts_with('{');
+    if looks_like_rust {
+        let formatted = try_format_as_mod(trimmed, 0, rustfmt_path, edition, config_path)
+            .or_else(|| try_format_as_fn(trimmed, 0, rustfmt_path, edition, config_path));
+        if let Some(formatted) =
+            formatted.filter(|text| ensure_tokens_preserved(trimmed, text).is_ok())
+        {
+            return indent_invocation_body(&formatted, base_indent);
+        }
+    }
+
+    let canonical = mapper::canonical_token_spacing(trimmed);
+    let expanded_item = mapper::expand_inline_structs(&canonical);
+    if expanded_item.contains('\n') {
+        return indent_invocation_body(&expanded_item, base_indent);
+    }
+    if let Some(block) = format_named_brace_list(&canonical, base_indent) {
+        return if open == '{' {
+            indent_invocation_body(&block, base_indent)
+        } else {
+            block
+        };
+    }
+
+    let width_limit = if inner.contains('\n') { 80 } else { 100 };
+    if !canonical.contains('\n') && prefix_width + canonical.len() + 1 <= width_limit {
+        return if open == '{' {
+            format!(" {canonical} ")
+        } else {
+            canonical
+        };
+    }
+    if let Some(list) = format_dsl_comma_list(&canonical, base_indent) {
+        return list;
+    }
+
+    let lines = inner
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| mapper::canonical_token_spacing(line.trim()))
+        .collect::<Vec<_>>();
+    if lines.len() <= 1 {
+        canonical
+    } else {
+        indent_invocation_body(&lines.join("\n"), base_indent)
+    }
+}
+
+fn format_dsl_comma_list(source: &str, base_indent: usize) -> Option<String> {
+    let tokens = parser::significant_tokens(source).ok()?;
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    let mut items = Vec::new();
+    let mut has_compound_item = false;
+    for (index, token) in tokens.iter().enumerate() {
+        match token.text.as_str() {
+            "(" | "[" | "{" => depth += 1,
+            ")" | "]" | "}" => depth = depth.saturating_sub(1),
+            "," if depth == 0 => {
+                if start < index {
+                    let text = mapper::canonical_token_spacing(
+                        &source[tokens[start].span.start..token.span.start],
+                    );
+                    has_compound_item |= index - start > 1;
+                    items.push(text);
+                }
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    let trailing_comma = tokens.last().is_some_and(|token| token.text == ",");
+    if start < tokens.len() {
+        let text = mapper::canonical_token_spacing(
+            &source[tokens[start].span.start..tokens.last()?.span.end],
+        );
+        has_compound_item |= tokens.len() - start > 1;
+        items.push(text);
+    }
+    if items.len() < 2 || !has_compound_item {
+        return None;
+    }
+    let mut output = String::new();
+    let item_count = items.len();
+    for (index, item) in items.into_iter().enumerate() {
+        output.push('\n');
+        output.push_str(&" ".repeat(base_indent + 4));
+        output.push_str(&item);
+        if index + 1 < item_count || trailing_comma {
+            output.push(',');
+        }
+    }
+    output.push('\n');
+    output.push_str(&" ".repeat(base_indent));
+    Some(output)
+}
+
+fn indent_invocation_body(body: &str, base_indent: usize) -> String {
+    let lines = body
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>();
+    let minimum = lines
+        .iter()
+        .map(|line| line.len() - line.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    let mut result = String::new();
+    for line in lines {
+        result.push('\n');
+        result.push_str(&" ".repeat(base_indent + 4));
+        let indent = line.len() - line.trim_start().len();
+        result.push_str(&" ".repeat(indent.saturating_sub(minimum)));
+        result.push_str(line.trim_start());
+    }
+    result.push('\n');
+    result.push_str(&" ".repeat(base_indent));
+    result
+}
+
+fn format_named_brace_list(source: &str, base_indent: usize) -> Option<String> {
+    let tokens = parser::significant_tokens(source).ok()?;
+    if tokens.len() < 4
+        || !matches!(tokens[0].kind.as_str(), "Ident" | "RawIdent")
+        || tokens[1].text != "{"
+        || tokens.last()?.text != "}"
+    {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut item_start = 2usize;
+    let mut items = Vec::new();
+    for index in 2..tokens.len() - 1 {
+        match tokens[index].text.as_str() {
+            "(" | "[" | "{" => depth += 1,
+            ")" | "]" | "}" => depth = depth.saturating_sub(1),
+            "," if depth == 0 => {
+                if item_start < index {
+                    items.push(tokens[item_start].span.start..tokens[index].span.end);
+                }
+                item_start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    if items.len() < 2 {
+        return None;
+    }
+    let mut result = format!("{} {{", tokens[0].text);
+    for item in items {
+        result.push('\n');
+        result.push_str(&" ".repeat(base_indent + 4));
+        result.push_str(&mapper::canonical_token_spacing(&source[item]));
+    }
+    result.push('\n');
+    result.push_str(&" ".repeat(base_indent));
+    result.push('}');
+    Some(result)
+}
+
+fn normalize_layout_gaps(source: &str) -> String {
+    let tokens = layout_tokens(source);
+    let macro_names = parse_macro_defs(source)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|definition| definition.name)
+        .collect::<HashSet<_>>();
+    let significant = tokens
+        .iter()
+        .enumerate()
+        .filter(|(_, token)| !is_layout_trivia(token.kind))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let mut depth = 0usize;
+    let mut depth_after = vec![0usize; tokens.len()];
+    for &index in &significant {
+        match tokens[index].kind {
+            TokenKind::OpenParen | TokenKind::OpenBrace | TokenKind::OpenBracket => depth += 1,
+            TokenKind::CloseParen | TokenKind::CloseBrace | TokenKind::CloseBracket => {
+                depth = depth.saturating_sub(1)
+            }
+            _ => {}
+        }
+        depth_after[index] = depth;
+    }
+
+    let mut replacements = Vec::new();
+    for pair in significant.windows(2) {
+        let previous_index = pair[0];
+        let next_index = pair[1];
+        let previous = &tokens[previous_index];
+        let next = &tokens[next_index];
+        let gap = &source[previous.span.end..next.span.start];
+        if !gap.contains('\n') {
+            continue;
+        }
+        let indent = gap.rsplit_once('\n').map_or("", |(_, indent)| indent);
+        let blank_lines = gap.bytes().filter(|byte| *byte == b'\n').count();
+
+        let top_level_boundary = depth_after[previous_index] == 0
+            && matches!(previous.kind, TokenKind::CloseBrace | TokenKind::Semi);
+        let comma_gap = previous.kind == TokenKind::Comma && blank_lines > 1;
+        let previous_macro = preceding_macro_name(source, &tokens, &significant, previous_index);
+        let repeated_macro_gap = previous.kind == TokenKind::Semi
+            && blank_lines > 1
+            && previous_macro == following_macro_name(source, &tokens, next_index)
+            && previous_macro.is_some_and(|name| macro_names.contains(name));
+        let attribute_gap = blank_lines > 1
+            && previous.kind == TokenKind::CloseBracket
+            && is_attribute_close(&tokens, &significant, previous_index);
+
+        let desired = if top_level_boundary {
+            format!("\n\n{indent}")
+        } else if comma_gap || repeated_macro_gap || attribute_gap {
+            format!("\n{indent}")
+        } else {
+            continue;
+        };
+        if gap != desired {
+            replacements.push((previous.span.end..next.span.start, desired));
+        }
+    }
+
+    let mut result = source.to_string();
+    for (span, replacement) in replacements.into_iter().rev() {
+        result.replace_range(span, &replacement);
+    }
+    result
+}
+
+fn is_attribute_close(tokens: &[LayoutToken], significant: &[usize], close: usize) -> bool {
+    let Some(mut position) = significant.iter().position(|index| *index == close) else {
+        return false;
+    };
+    let mut depth = 1usize;
+    while let Some(previous) = position.checked_sub(1) {
+        position = previous;
+        let index = significant[position];
+        match tokens[index].kind {
+            TokenKind::CloseBracket => depth += 1,
+            TokenKind::OpenBracket => {
+                depth -= 1;
+                if depth == 0 {
+                    let Some(hash_position) = position.checked_sub(1) else {
+                        return false;
+                    };
+                    return tokens[significant[hash_position]].kind == TokenKind::Pound;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn preceding_macro_name<'a>(
+    source: &'a str,
+    tokens: &[LayoutToken],
+    significant: &[usize],
+    before: usize,
+) -> Option<&'a str> {
+    let position = significant.iter().position(|index| *index == before)?;
+    for &index in significant[..position].iter().rev().take(32) {
+        if tokens[index].kind == TokenKind::Bang {
+            let ident_position = significant
+                .iter()
+                .position(|candidate| *candidate == index)?;
+            let ident = *significant.get(ident_position.checked_sub(1)?)?;
+            if matches!(tokens[ident].kind, TokenKind::Ident | TokenKind::RawIdent) {
+                return Some(&source[tokens[ident].span.clone()]);
+            }
+        }
+        if matches!(tokens[index].kind, TokenKind::Semi | TokenKind::OpenBrace) {
+            break;
+        }
+    }
+    None
+}
+
+fn following_macro_name<'a>(
+    source: &'a str,
+    tokens: &[LayoutToken],
+    start: usize,
+) -> Option<&'a str> {
+    if !matches!(tokens[start].kind, TokenKind::Ident | TokenKind::RawIdent) {
+        return None;
+    }
+    let bang = next_layout_token(tokens, start + 1)?;
+    (tokens[bang].kind == TokenKind::Bang).then(|| &source[tokens[start].span.clone()])
+}
+
+struct OnceResult {
+    text: String,
+    skipped_reasons: Vec<Option<String>>,
+}
+
+fn format_definition_once(
+    source: &str,
+    definition: &crate::types::MacroDef,
+    rustfmt_path: &str,
+    edition: &str,
+    config_path: Option<&str>,
+) -> anyhow::Result<String> {
+    if !supports_deep_format(source, definition) {
+        return Ok(format_definition_without_brace_bodies(source, definition));
+    }
+    let mut all_replaced_bodies_str: Vec<String> = Vec::new();
+    let mut all_mappings: Vec<Mapping> = Vec::new();
+    let marker_prefix = unique_prefix(source);
+    for arm in &definition.arms {
+        let arm_body_text = &source[arm.body_span.clone()];
+        let body_text = arm_body_text.trim();
+        let inner = if body_text.starts_with("{{") && body_text.ends_with("}}") {
+            &body_text[2..body_text.len() - 2]
+        } else {
+            &body_text[1..body_text.len() - 1]
+        };
+        let trimmed = inner.strip_prefix('\n').unwrap_or(inner);
+        let inner_text = trimmed.strip_suffix('\n').unwrap_or(trimmed);
+        let mut mapping = Mapping::with_prefix(marker_prefix.clone());
+        let mut inner_str = normalize_body_indent(inner_text);
+        inner_str = replace_macro_syntax_text(&inner_str, &mut mapping);
+        inner_str = preformat_rep_bodies(
+            &inner_str,
+            &format!("{marker_prefix}rep_"),
+            rustfmt_path,
+            edition,
+            config_path,
+        );
+        all_replaced_bodies_str.push(inner_str);
+        all_mappings.push(mapping);
+    }
+    let shadow_code = build_shadow_file_from_strings(&all_replaced_bodies_str, &marker_prefix);
+    let formatted_shadow = run_rustfmt(&shadow_code, rustfmt_path, edition, config_path)?;
+    Ok(apply_formatting(
+        source,
+        std::slice::from_ref(definition),
+        &formatted_shadow,
+        &all_mappings,
+    ))
+}
+
+fn supports_deep_format(source: &str, definition: &crate::types::MacroDef) -> bool {
+    definition.arms.iter().all(|arm| {
+        let body = source[arm.body_span.clone()].trim();
+        body.starts_with('{') && body.ends_with('}')
+    })
 }
 
 fn format_source_once(
@@ -437,37 +857,38 @@ fn format_source_once(
     rustfmt_path: &str,
     edition: &str,
     config_path: Option<&str>,
-) -> anyhow::Result<String> {
-    let macro_defs = parse_macro_defs(source)?;
-    if macro_defs.is_empty() {
-        return final_format_pass(source, rustfmt_path, edition, config_path);
-    }
-    let mut all_replaced_bodies_str: Vec<String> = Vec::new();
-    let mut all_mappings: Vec<Mapping> = Vec::new();
-    for def in &macro_defs {
-        for arm in &def.arms {
-            let arm_body_text = &source[arm.body_span.clone()];
-            let body_text = arm_body_text.trim();
-            let inner_text = if body_text.starts_with('{') && body_text.ends_with('}') {
-                let inner = &body_text[1..body_text.len() - 1];
-                let trimmed = inner.strip_prefix('\n').unwrap_or(inner);
-                let trimmed = trimmed.strip_suffix('\n').unwrap_or(trimmed);
-                trimmed.to_string()
-            } else {
-                body_text.to_string()
-            };
-            let mut mapping = Mapping::new();
-            let mut inner_str = normalize_body_indent(&inner_text);
-            inner_str = replace_macro_syntax_text(&inner_str, &mut mapping);
-            inner_str = preformat_rep_bodies(&inner_str, rustfmt_path, edition, config_path);
-            all_replaced_bodies_str.push(inner_str);
-            all_mappings.push(mapping);
+) -> anyhow::Result<OnceResult> {
+    let definitions = parse_macro_defs(source)?;
+    let mut text = source.to_string();
+    let mut skipped_reasons = vec![None; definitions.len()];
+
+    for (index, definition) in definitions.iter().enumerate().rev() {
+        match format_definition_once(&text, definition, rustfmt_path, edition, config_path) {
+            Ok(candidate) => match ensure_tokens_preserved(&text, &candidate) {
+                Ok(()) => text = candidate,
+                Err(error) => {
+                    skipped_reasons[index] = Some(format!("lossless check failed: {error}"));
+                }
+            },
+            Err(error) => {
+                skipped_reasons[index] = Some(format!("shadow formatting failed: {error}"));
+            }
         }
     }
-    let shadow_code = build_shadow_file_from_strings(&all_replaced_bodies_str);
-    let formatted_shadow = run_rustfmt(&shadow_code, rustfmt_path, edition, config_path)?;
-    let result = apply_formatting(source, &macro_defs, &formatted_shadow, &all_mappings);
-    final_format_pass(&result, rustfmt_path, edition, config_path)
+
+    let formatted = final_format_pass(&text, rustfmt_path, edition, config_path)?;
+    ensure_tokens_preserved(&text, &formatted)?;
+    Ok(OnceResult {
+        text: formatted,
+        skipped_reasons,
+    })
+}
+
+fn unique_prefix(source: &str) -> String {
+    (0..)
+        .map(|index| format!("__m{index}_"))
+        .find(|candidate| !source.contains(candidate))
+        .expect("infinite marker namespace")
 }
 
 pub fn format_source(
@@ -476,13 +897,75 @@ pub fn format_source(
     edition: &str,
     config_path: Option<&str>,
 ) -> anyhow::Result<String> {
-    let mut current = source.to_string();
-    for _ in 0..4 {
-        let next = format_source_once(&current, rustfmt_path, edition, config_path)?;
-        if next == current {
-            return Ok(next);
-        }
-        current = next;
+    Ok(format_source_with_report(source, rustfmt_path, edition, config_path)?.text)
+}
+
+pub fn format_source_with_report(
+    source: &str,
+    rustfmt_path: &str,
+    edition: &str,
+    config_path: Option<&str>,
+) -> anyhow::Result<FormatResult> {
+    let definitions = parse_macro_defs(source)?;
+    let first = format_source_once(source, rustfmt_path, edition, config_path)?;
+    ensure_tokens_preserved(source, &first.text)?;
+    run_rustfmt_no_macro(&first.text, rustfmt_path, edition, config_path)?;
+    let second = format_source_once(&first.text, rustfmt_path, edition, config_path)?;
+    ensure_tokens_preserved(&first.text, &second.text)?;
+    anyhow::ensure!(
+        first.text == second.text,
+        "macro formatting is not idempotent"
+    );
+    let formatted_definitions = parse_macro_defs(&first.text)?;
+    let macros = definitions
+        .into_iter()
+        .enumerate()
+        .map(|(index, definition)| MacroOutcome {
+            status: if let Some(reason) = &first.skipped_reasons[index] {
+                MacroStatus::Skipped {
+                    reason: reason.clone(),
+                }
+            } else if formatted_definitions.get(index).is_some_and(|formatted| {
+                formatted.name == definition.name
+                    && first.text[formatted.span.clone()] == source[definition.span.clone()]
+            }) {
+                MacroStatus::Unchanged
+            } else {
+                MacroStatus::Formatted
+            },
+            name: definition.name,
+            span: definition.span,
+        })
+        .collect();
+    Ok(FormatResult {
+        text: first.text,
+        macros,
+    })
+}
+
+fn ensure_tokens_preserved(before: &str, after: &str) -> anyhow::Result<()> {
+    let before = parser::significant_tokens(before)?;
+    let after = parser::significant_tokens(after)?;
+    if before.len() != after.len() {
+        anyhow::bail!(
+            "formatter changed significant Rust token count: {} -> {}",
+            before.len(),
+            after.len()
+        );
     }
-    anyhow::bail!("macro formatting did not converge after 4 passes")
+    if let Some((index, (left, right))) = before
+        .iter()
+        .zip(&after)
+        .enumerate()
+        .find(|(_, (left, right))| left.kind != right.kind || left.text != right.text)
+    {
+        anyhow::bail!(
+            "formatter changed significant Rust token {index}: {:?} {:?} -> {:?} {:?}",
+            left.kind,
+            left.text,
+            right.kind,
+            right.text
+        );
+    }
+    Ok(())
 }

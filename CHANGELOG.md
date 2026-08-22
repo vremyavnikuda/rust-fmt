@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+- Explicit per-macro formatting outcomes: `FORMATTED`, `UNCHANGED`, and `SKIPPED` with a reason and source range. Diagnostics are written to stderr while stdout remains valid formatted Rust.
+- A safety oracle that verifies exact significant-token preservation, complete-file Rust syntax, and byte-identical output on a second formatting pass.
+- Automatic discovery and auditing of every golden fixture and every Rust source file under `test-rs/src`, with separate safety, golden-output, and deep-format coverage metrics.
+- Adversarial regression fixtures for matcher line comments, literal delimiters, Unicode identifiers, synthetic-marker collisions, `macro_rules!` text inside literals and comments, all definition/transcriber delimiters, arbitrary repetition separators, tuple trailing commas, and opaque macro DSLs.
+- Compilation validation of a temporary fully formatted `test-rs` copy with `cargo check --all-targets`.
+- Native binary path and SHA-256 logging in the VS Code extension for detecting stale bundled artifacts.
+
+### Changed
+- Replaced byte-level `macro_rules!` discovery with `ra-ap-rustc_lexer`, exact UTF-8 byte ranges, and typed matching for `()`, `[]`, and `{}` delimiters.
+- Native formatting now processes macro definitions independently. Unsupported or lossy transformations preserve the original macro and report `SKIPPED` instead of returning partially rewritten code.
+- Macro matchers, transcribers, generated `macro_rules!` definitions, and custom macro invocations now use token-aware spacing and delimiter handling instead of raw string replacements.
+- Parenthesized and bracketed transcribers, arbitrary repetition separators, nested repetitions, item/block invocations, and comment-bearing matchers are formatted losslessly.
+- Synthetic metavariable, repetition, shadow, and final-pass markers now use a collision-free prefix verified to be absent from the source.
+- Removed the arbitrary four-pass convergence loop; one formatting pass must now be idempotent or fail closed.
+- The VS Code extension now sends the original document directly to the native formatter. Native failure falls back to ordinary `rustfmt` using the same original text, without TypeScript spacing or indentation rewrites.
+- The current-platform build verifies that the release artifact and copied `bin/<platform>-<arch>` binary have identical SHA-256 hashes.
+- Rebuilt the bundled Linux x64 native formatter with the new safety pipeline while leaving other platform artifacts unchanged.
+
+### Fixed
+- False detection of `macro_rules!` inside strings and comments, and premature delimiter closure caused by character literals or comments containing braces and parentheses.
+- UTF-8 corruption when formatting Unicode identifiers and comments.
+- Matcher corruption when collapsing a newline after a `//` comment.
+- Changes to string literal contents caused by global spacing replacements.
+- Collisions with user identifiers and comments resembling internal names such as `__m_0`, `__mf_rep_*`, and `__mf_nm_0__`.
+- Loss of semantically significant tuple trailing commas.
+- Loss of nested block braces when extracting formatted shadow macro bodies.
+- Incorrect indentation and second-pass drift in nested blocks and repetition bodies.
+- Unsafe removal of closure blocks inside macro repetitions.
+- Incorrect whitespace around compound operators, postfix `?`, paths, generic arguments, macro fragment specifiers, and `$()` repetition operators.
+- First-pass indentation drift caused by using the original whitespace before a top-level `macro_rules!` definition as its structural nesting level.
+- Incomplete fixture coverage caused by a manually maintained fixture list. The current release audit is 100% safety coverage (80/80 files), 100% golden coverage (71/71 fixtures), and 100% deep-format coverage (200/200 macros), including all nine Rust files under `test-rs/src` and compilation of their formatted copy.
+
 ## 0.1.7 - 2026-06-22
 
 ### Fixed

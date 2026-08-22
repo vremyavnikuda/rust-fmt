@@ -1,0 +1,5 @@
+macro_rules! commented_matcher {
+    (
+        $left:expr, // left operand
+        $right:expr $(,)?) => {{ $left+$right }};
+}

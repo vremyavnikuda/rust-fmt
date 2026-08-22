@@ -3,6 +3,30 @@ use crate::parser::*;
 use crate::replacer::*;
 use crate::shadow::*;
 use crate::types::Mapping;
+
+#[test]
+fn marker_collision_is_idempotent() {
+    let source = include_str!("../tests/fixtures/marker_collision.rs");
+    let first = super::format_source_once(source, "rustfmt", "2021", None).unwrap();
+    let second = super::format_source_once(&first.text, "rustfmt", "2021", None).unwrap();
+    assert_eq!(first.text, second.text);
+}
+
+#[test]
+fn real_macro_edge_cases_are_idempotent() {
+    let source = include_str!("../tests/fixtures/real_macro_edge_cases.rs");
+    let first = super::format_source_once(source, "rustfmt", "2021", None).unwrap();
+    let second = super::format_source_once(&first.text, "rustfmt", "2021", None).unwrap();
+    assert_eq!(first.text, second.text);
+}
+
+#[test]
+fn real_main_fmt_is_idempotent() {
+    let source = include_str!("../tests/fixtures/real_main_fmt.rs");
+    let first = super::format_source_once(source, "rustfmt", "2021", None).unwrap();
+    let second = super::format_source_once(&first.text, "rustfmt", "2021", None).unwrap();
+    assert_eq!(first.text, second.text);
+}
 use proc_macro2::TokenStream;
 
 #[test]
@@ -151,6 +175,40 @@ fn test_no_macros() {
 }
 
 #[test]
+fn parser_ignores_macro_rules_inside_trivia_and_literals() {
+    let source = r#"
+const TEXT: &str = "macro_rules! fake { () => { 1 } }";
+// macro_rules! comment { () => { 2 } }
+macro_rules! real { () => { 3 }; }
+"#;
+    let defs = parse_macro_defs(source).unwrap();
+    assert_eq!(
+        defs.iter().map(|def| def.name.as_str()).collect::<Vec<_>>(),
+        ["real"]
+    );
+}
+
+#[test]
+fn parser_preserves_unicode_and_literal_delimiters() {
+    let source = "fn привет() {}\nmacro_rules! m { () => { let c = '}'; // }\n c }; }\n";
+    let defs = parse_macro_defs(source).unwrap();
+    assert_eq!(defs.len(), 1);
+    assert_eq!(
+        &source[defs[0].span.clone()],
+        "macro_rules! m { () => { let c = '}'; // }\n c }; }"
+    );
+}
+
+#[test]
+fn parser_supports_all_definition_and_transcriber_delimiters() {
+    let source = "macro_rules! a (($x:expr) => [$x];);\nmacro_rules! b [($x:expr) => ($x);];";
+    let defs = parse_macro_defs(source).unwrap();
+    assert_eq!(defs.len(), 2);
+    assert_eq!(defs[0].arms.len(), 1);
+    assert_eq!(defs[1].arms.len(), 1);
+}
+
+#[test]
 fn test_macro_heavy_file() {
     let source = include_str!("../../test-rs/src/examples/macro_heavy.rs");
     let defs = parse_macro_defs(source).unwrap();
@@ -224,12 +282,26 @@ fn test_map_arm_section_with_repetition() {
 }
 
 #[test]
+fn test_map_arm_section_preserves_tuple_trailing_comma() {
+    let mapping = Mapping::new();
+    let result = map_arm_section("(\n    value,\n)", &mapping);
+    assert_eq!(result, "(value,)");
+}
+
+#[test]
 fn test_split_shadow_into_arms() {
     let shadow = "#![allow(unused_attributes, dead_code)]\n\nmacro_rules! __rustfmt_mf_arm_0 {\n    () => {\n        let x = 1;\n    };\n}\n\nmacro_rules! __rustfmt_mf_arm_1 {\n    () => {\n        let y = 2;\n    };\n}\n";
     let sections = split_shadow_into_arms(shadow);
     assert_eq!(sections.len(), 2);
     assert!(sections[0].contains("let x = 1"));
     assert!(sections[1].contains("let y = 2"));
+}
+
+#[test]
+fn test_split_shadow_preserves_an_inner_block() {
+    let shadow = "macro_rules! __rustfmt_mf_arm_0 {\n    () => {{\n        value\n    }};\n}\n";
+    let sections = split_shadow_into_arms(shadow);
+    assert_eq!(sections, ["{\n        value\n    }"]);
 }
 
 fn replace_and_map(source: &str) -> (String, Mapping) {

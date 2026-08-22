@@ -1,5 +1,5 @@
 macro_rules! struct_builder {
-    ($name:ident, $($field:ident : $ty:ty),+) => {
+    ($name:ident, $($field:ident: $ty:ty),+) => {
         pub struct $name {
             $($field: $ty),+
         }

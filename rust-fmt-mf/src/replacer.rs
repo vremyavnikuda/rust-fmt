@@ -326,14 +326,14 @@ pub fn replace_macro_syntax_text(body_text: &str, mapping: &mut Mapping) -> Stri
                     rep = Some(bytes[k] as char);
                     k += 1;
                 }
-                let marker_name = match (rep, sep) {
-                    (Some('*'), None) => "__mf_rep_star",
-                    (Some('+'), None) => "__mf_rep_plus",
-                    (Some('?'), None) => "__mf_rep_question",
-                    (Some('*'), Some(',')) => "__mf_rep_star_comma",
-                    (Some('+'), Some(',')) => "__mf_rep_plus_comma",
-                    (Some('*'), Some(';')) => "__mf_rep_star_semi",
-                    (Some('+'), Some(';')) => "__mf_rep_plus_semi",
+                let marker_kind = match (rep, sep) {
+                    (Some('*'), None) => "star",
+                    (Some('+'), None) => "plus",
+                    (Some('?'), None) => "question",
+                    (Some('*'), Some(',')) => "star_comma",
+                    (Some('+'), Some(',')) => "plus_comma",
+                    (Some('*'), Some(';')) => "star_semi",
+                    (Some('+'), Some(';')) => "plus_semi",
                     _ => {
                         // Not a valid repetition — emit as-is
                         result.push_str("$(");
@@ -345,7 +345,7 @@ pub fn replace_macro_syntax_text(body_text: &str, mapping: &mut Mapping) -> Stri
                 };
                 // Preserve whitespace between the previous token and the marker
                 // by copying the text before '$(' up to the marker
-                result.push_str(marker_name);
+                result.push_str(&mapping.repetition_marker(marker_kind));
                 result.push_str("!{");
                 result.push_str(&inner_replaced);
                 result.push('}');
@@ -403,8 +403,12 @@ pub fn replace_macro_syntax_text(body_text: &str, mapping: &mut Mapping) -> Stri
                 continue;
             }
         }
-        result.push(bytes[i] as char);
-        i += 1;
+        let ch = body_text[i..]
+            .chars()
+            .next()
+            .expect("index is a char boundary");
+        result.push(ch);
+        i += ch.len_utf8();
     }
     result
 }

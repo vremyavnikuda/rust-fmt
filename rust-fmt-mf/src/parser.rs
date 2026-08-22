@@ -1,328 +1,273 @@
+use std::ops::Range;
+
+use anyhow::{bail, ensure};
+use ra_ap_rustc_lexer::{tokenize, FrontmatterAllowed, TokenKind};
+
 use crate::types::{MacroArm, MacroDef};
 
-/// Parse source and extract all macro_rules! definitions with byte-accurate spans.
-///
-/// Scans the source text directly for `macro_rules!` patterns,
-/// then finds arm boundaries via brace/paren tracking.
-pub fn parse_macro_defs(source: &str) -> anyhow::Result<Vec<MacroDef>> {
-    let bytes = source.as_bytes();
-    let mut defs = Vec::new();
-    let mut found_starts: Vec<usize> = Vec::new();
-    let mut search_pos = 0;
-    while search_pos < bytes.len() {
-        if let Some(macro_pos) = find_macro_rules(bytes, search_pos) {
-            found_starts.push(macro_pos);
-            search_pos = macro_pos + "macro_rules!".len();
-        } else {
-            search_pos += 1;
-        }
-    }
-    for &start in &found_starts {
-        let mut pos = start + "macro_rules!".len();
-        // Skip whitespace
-        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
-            pos += 1;
-        }
-        // Parse macro name (ident or `?` for macro_rules!?)
-        let name_start = pos;
-        if pos < bytes.len() && bytes[pos] == b'?' {
-            pos += 1;
-        } else {
-            while pos < bytes.len() && (bytes[pos].is_ascii_alphanumeric() || bytes[pos] == b'_') {
-                pos += 1;
-            }
-        }
-        let name = String::from_utf8_lossy(&bytes[name_start..pos]).to_string();
-        // Find opening '{'
-        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
-            pos += 1;
-        }
-        if pos >= bytes.len() || bytes[pos] != b'{' {
-            continue;
-        }
-        // Find matching '}' for the macro_rules! body
-        let _body_start = pos;
-        pos += 1;
-        let mut depth = 1;
-        while pos < bytes.len() && depth > 0 {
-            match bytes[pos] {
-                b'{' => depth += 1,
-                b'}' => depth -= 1,
-                // Skip string literals to avoid false brace matches
-                b'"' => {
-                    pos += 1;
-                    while pos < bytes.len() && bytes[pos] != b'"' {
-                        if bytes[pos] == b'\\' {
-                            pos += 1; // skip escaped char
-                        }
-                        pos += 1;
-                    }
-                }
-                // Skip raw string literals
-                b'r' if pos + 1 < bytes.len() && bytes[pos + 1] == b'#' => {
-                    let hash_start = pos + 1;
-                    let mut hash_count = 0;
-                    while hash_start + hash_count < bytes.len()
-                        && bytes[hash_start + hash_count] == b'#'
-                    {
-                        hash_count += 1;
-                    }
-                    if hash_start + hash_count < bytes.len()
-                        && bytes[hash_start + hash_count] == b'"'
-                    {
-                        pos = hash_start + hash_count + 1; // after r#"..."#
-                        let delimiter = format!("\"{}", "#".repeat(hash_count));
-                        while pos < bytes.len() {
-                            if pos + hash_count < bytes.len()
-                                && &bytes[pos..pos + hash_count + 1] == delimiter.as_bytes()
-                            {
-                                pos += hash_count + 1;
-                                break;
-                            }
-                            pos += 1;
-                        }
-                        continue;
-                    }
-                }
-                // Skip line comments
-                b'/' if pos + 1 < bytes.len() && bytes[pos + 1] == b'/' => {
-                    while pos < bytes.len() && bytes[pos] != b'\n' {
-                        pos += 1;
-                    }
-                }
-                // Skip block comments
-                b'/' if pos + 1 < bytes.len() && bytes[pos + 1] == b'*' => {
-                    pos += 2;
-                    while pos + 1 < bytes.len() {
-                        if bytes[pos] == b'*' && bytes[pos + 1] == b'/' {
-                            pos += 2;
-                            break;
-                        }
-                        pos += 1;
-                    }
-                    continue;
-                }
-                _ => {}
-            }
-            pos += 1;
-        }
-        let end = pos;
-        let arms = scan_arms(source, start, end)?;
-        if !arms.is_empty() {
-            let line_start = source[..start].rfind('\n').map(|p| p + 1).unwrap_or(0);
-            let attr_start = find_attr_span_start(source, line_start);
-            defs.push(MacroDef {
-                name,
-                span: attr_start..end,
-                arms,
-            });
-        }
-    }
-    // Sort by span length descending (outermost first), then filter nested macros
-    defs.sort_by(|a, b| b.span.len().cmp(&a.span.len()));
-    let mut filtered_defs: Vec<MacroDef> = Vec::new();
-    for def in defs {
-        if !filtered_defs.iter().any(|outer: &MacroDef| {
-            outer.span.start <= def.span.start && outer.span.end >= def.span.end
-        }) {
-            filtered_defs.push(def);
-        }
-    }
-    // Sort outermost first for processing
-    filtered_defs.sort_by_key(|d| d.span.start);
-    Ok(filtered_defs)
+#[derive(Clone, Debug)]
+struct SourceToken {
+    kind: TokenKind,
+    span: Range<usize>,
 }
 
-/// Scan backward from `pos` to find the start of any attributes, doc
-/// comments, or blank lines preceding the definition. Multi-line attributes
-/// (e.g. `#[cfg_attr(...)]`) are tracked by detecting lines ending with `]`.
-fn find_attr_span_start(source: &str, pos: usize) -> usize {
-    let mut cur = pos;
-    let mut found_attr = false;
-    loop {
-        if cur == 0 {
-            return if found_attr { 0 } else { pos };
-        }
-        // Find the `\n` that ends the line before `cur`.
-        let prev_nl = match source[..cur].rfind('\n') {
-            Some(p) => p,
-            None => return if found_attr { 0 } else { pos },
-        };
-        // Find the `\n` before that to get the start of the line we inspect.
-        let line_start = match source[..prev_nl].rfind('\n') {
-            Some(p) => p + 1,
-            None => 0,
-        };
-        let trimmed = source[line_start..prev_nl].trim();
-        if trimmed.is_empty() {
-            cur = line_start;
-            continue;
-        }
-        if trimmed.starts_with("///") || trimmed.starts_with("//!") {
-            found_attr = true;
-            cur = line_start;
-            continue;
-        }
-        if trimmed.starts_with("#[") && !trimmed.starts_with("#![") {
-            found_attr = true;
-            cur = line_start;
-            continue;
-        }
-        if trimmed.ends_with(']') {
-            found_attr = true;
-            cur = line_start;
-            continue;
-        }
-        return if found_attr { cur } else { pos };
-    }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignificantToken {
+    pub kind: String,
+    pub text: String,
+    pub span: Range<usize>,
 }
 
-/// Find the next occurrence of "macro_rules!" at or after `pos` that is not
-/// inside a string, comment, or identifier.
-fn find_macro_rules(bytes: &[u8], pos: usize) -> Option<usize> {
-    let pattern = b"macro_rules!";
-    let mut i = pos;
-    while i + pattern.len() <= bytes.len() {
-        if &bytes[i..i + pattern.len()] == pattern {
-            // Check it's not part of a larger identifier (preceded by alphanumeric or _)
-            if i > 0 {
-                let prev = bytes[i - 1];
-                if prev.is_ascii_alphanumeric() || prev == b'_' {
-                    i += 1;
-                    continue;
-                }
-            }
-            // Check it's not inside a string or comment — just do a
-            // simple heuristic: not preceded by " inside same line
-            return Some(i);
-        }
-        i += 1;
-    }
-    None
+fn is_trivia(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Whitespace | TokenKind::LineComment { .. } | TokenKind::BlockComment { .. }
+    )
 }
 
-/// Scan the original source text within the macro_rules! span to find arm boundaries.
-///
-/// Macro structure:
-///   macro_rules! name {
-///       (pattern1) => { body1 }
-///       (pattern2) => { body2 }
-///   }
-///
-/// Each arm: (pattern) => { body }
-/// Also supports {pattern} and [pattern] as arm delimiters.
-fn scan_arms(source: &str, macro_start: usize, macro_end: usize) -> anyhow::Result<Vec<MacroArm>> {
-    let macro_end = macro_end.min(source.len());
-    let text = &source[macro_start..macro_end];
-    let bytes = text.as_bytes();
-    let mut arms = Vec::new();
-    let mut pos = 0;
-    // Skip to the opening '{' of macro_rules! name { ... }
-    while pos < bytes.len() && bytes[pos] != b'{' {
-        pos += 1;
-    }
-    pos += 1;
-    while pos < bytes.len() {
-        // Skip whitespace between arms
-        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
-            pos += 1;
-        }
-        if pos >= bytes.len() || bytes[pos] == b'}' {
-            break;
-        }
-        // Accept (, {, [ as arm pattern start
-        let _close_delim = match bytes[pos] {
-            b'(' => b')',
-            b'{' => b'}',
-            b'[' => b']',
-            _ => {
-                pos += 1;
-                continue;
-            }
-        };
-        // Find matching closing delimiter — tracking all bracket types
-        let pattern_start_rel = pos;
-        pos += 1;
-        let mut depth = 1;
-        let mut in_string = false;
-        while pos < bytes.len() {
-            if in_string {
-                if bytes[pos] == b'"' {
-                    in_string = false;
-                } else if bytes[pos] == b'\\' {
-                    pos += 1; // skip escape
-                    if pos >= bytes.len() {
-                        break;
-                    }
-                    continue;
-                }
-            } else {
-                match bytes[pos] {
-                    b'"' => in_string = true,
-                    b'(' | b'{' | b'[' => depth += 1,
-                    b')' | b'}' | b']' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            pos += 1;
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            pos += 1;
-        }
-        let pattern_end_rel = pos;
-        // Expect '=>'
-        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
-            pos += 1;
-        }
-        if pos + 1 >= bytes.len() || bytes[pos] != b'=' || bytes[pos + 1] != b'>' {
-            break;
-        }
-        pos += 2;
-        // Expect '{' — body start
-        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
-            pos += 1;
-        }
-        if pos >= bytes.len() || bytes[pos] != b'{' {
-            break;
-        }
-        let body_start_rel = pos;
-        let mut brace_depth = 0;
-        in_string = false;
-        while pos < bytes.len() {
-            if in_string {
-                if bytes[pos] == b'"' {
-                    in_string = false;
-                } else if bytes[pos] == b'\\' {
-                    pos += 1;
-                    if pos >= bytes.len() {
-                        break;
-                    }
-                    continue;
-                }
-            } else {
-                match bytes[pos] {
-                    b'"' => in_string = true,
-                    b'{' => brace_depth += 1,
-                    b'}' => {
-                        brace_depth -= 1;
-                        if brace_depth == 0 {
-                            pos += 1;
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            pos += 1;
-        }
-        let body_end_rel = pos;
-        arms.push(MacroArm {
-            pattern_span: (macro_start + pattern_start_rel)..(macro_start + pattern_end_rel),
-            body_span: (macro_start + body_start_rel)..(macro_start + body_end_rel),
+fn lex(source: &str) -> anyhow::Result<Vec<SourceToken>> {
+    let mut offset = 0usize;
+    let mut tokens = Vec::new();
+    for token in tokenize(source, FrontmatterAllowed::Yes) {
+        let len = token.len as usize;
+        let end = offset
+            .checked_add(len)
+            .ok_or_else(|| anyhow::anyhow!("Rust token offset overflow"))?;
+        ensure!(
+            source.is_char_boundary(offset) && source.is_char_boundary(end),
+            "Rust lexer returned a non-UTF-8 token boundary at {offset}..{end}"
+        );
+        tokens.push(SourceToken {
+            kind: token.kind,
+            span: offset..end,
         });
+        offset = end;
+    }
+    ensure!(
+        offset == source.len(),
+        "Rust lexer stopped at byte {offset} of {}",
+        source.len()
+    );
+    Ok(tokens)
+}
+
+pub fn significant_tokens(source: &str) -> anyhow::Result<Vec<SignificantToken>> {
+    Ok(lex(source)?
+        .into_iter()
+        .filter(|token| !matches!(token.kind, TokenKind::Whitespace))
+        .map(|token| SignificantToken {
+            kind: format!("{:?}", token.kind),
+            text: source[token.span.clone()].to_string(),
+            span: token.span,
+        })
+        .collect())
+}
+
+fn next_non_trivia(tokens: &[SourceToken], from: usize) -> Option<usize> {
+    (from..tokens.len()).find(|&index| !is_trivia(tokens[index].kind))
+}
+
+fn delimiter_pair(kind: TokenKind) -> Option<(TokenKind, TokenKind)> {
+    match kind {
+        TokenKind::OpenParen => Some((TokenKind::OpenParen, TokenKind::CloseParen)),
+        TokenKind::OpenBrace => Some((TokenKind::OpenBrace, TokenKind::CloseBrace)),
+        TokenKind::OpenBracket => Some((TokenKind::OpenBracket, TokenKind::CloseBracket)),
+        _ => None,
+    }
+}
+
+fn matching_delimiter(tokens: &[SourceToken], open: usize) -> anyhow::Result<usize> {
+    let Some((open_kind, close_kind)) = delimiter_pair(tokens[open].kind) else {
+        bail!(
+            "token at {} is not an opening delimiter",
+            tokens[open].span.start
+        );
+    };
+    let mut stack = vec![close_kind];
+    for (index, token) in tokens.iter().enumerate().skip(open + 1) {
+        if let Some((_, expected_close)) = delimiter_pair(token.kind) {
+            stack.push(expected_close);
+            continue;
+        }
+        if matches!(
+            token.kind,
+            TokenKind::CloseParen | TokenKind::CloseBrace | TokenKind::CloseBracket
+        ) {
+            let expected = stack.pop().ok_or_else(|| {
+                anyhow::anyhow!("unexpected closing delimiter at byte {}", token.span.start)
+            })?;
+            ensure!(
+                token.kind == expected,
+                "mismatched delimiter at byte {}: expected {:?}, found {:?}",
+                token.span.start,
+                expected,
+                token.kind
+            );
+            if stack.is_empty() {
+                return Ok(index);
+            }
+        }
+    }
+    bail!(
+        "unclosed {:?} delimiter at byte {}",
+        open_kind,
+        tokens[open].span.start
+    )
+}
+
+fn scan_arms(tokens: &[SourceToken], open: usize, close: usize) -> anyhow::Result<Vec<MacroArm>> {
+    let mut arms = Vec::new();
+    let mut cursor = open + 1;
+    while let Some(pattern_open) = next_non_trivia(tokens, cursor) {
+        if pattern_open >= close {
+            break;
+        }
+        if matches!(
+            tokens[pattern_open].kind,
+            TokenKind::Semi | TokenKind::Comma
+        ) {
+            cursor = pattern_open + 1;
+            continue;
+        }
+        if delimiter_pair(tokens[pattern_open].kind).is_none() {
+            cursor = pattern_open + 1;
+            continue;
+        }
+
+        let pattern_close = matching_delimiter(tokens, pattern_open)?;
+        ensure!(
+            pattern_close < close,
+            "macro matcher crosses its definition boundary"
+        );
+        let eq = next_non_trivia(tokens, pattern_close + 1)
+            .ok_or_else(|| anyhow::anyhow!("macro matcher has no transcriber"))?;
+        let gt = next_non_trivia(tokens, eq + 1)
+            .ok_or_else(|| anyhow::anyhow!("macro matcher has incomplete fat arrow"))?;
+        ensure!(
+            tokens[eq].kind == TokenKind::Eq
+                && tokens[gt].kind == TokenKind::Gt
+                && tokens[eq].span.end == tokens[gt].span.start,
+            "expected fat arrow after macro matcher at byte {}",
+            tokens[pattern_close].span.end
+        );
+        let body_open = next_non_trivia(tokens, gt + 1)
+            .ok_or_else(|| anyhow::anyhow!("macro arm has no transcriber body"))?;
+        ensure!(
+            delimiter_pair(tokens[body_open].kind).is_some(),
+            "macro transcriber at byte {} is not delimited",
+            tokens[body_open].span.start
+        );
+        let body_close = matching_delimiter(tokens, body_open)?;
+        ensure!(
+            body_close < close,
+            "macro transcriber crosses its definition boundary"
+        );
+        arms.push(MacroArm {
+            pattern_span: tokens[pattern_open].span.start..tokens[pattern_close].span.end,
+            body_span: tokens[body_open].span.start..tokens[body_close].span.end,
+        });
+        cursor = body_close + 1;
     }
     Ok(arms)
+}
+
+/// Parse macro_rules definitions using Rust lexer tokens and byte-accurate spans.
+pub fn parse_macro_defs(source: &str) -> anyhow::Result<Vec<MacroDef>> {
+    let tokens = lex(source)?;
+    let mut defs = Vec::new();
+
+    for index in 0..tokens.len() {
+        if tokens[index].kind != TokenKind::Ident
+            || &source[tokens[index].span.clone()] != "macro_rules"
+        {
+            continue;
+        }
+        let Some(bang) = next_non_trivia(&tokens, index + 1) else {
+            continue;
+        };
+        if tokens[bang].kind != TokenKind::Bang {
+            continue;
+        }
+        let Some(name_index) = next_non_trivia(&tokens, bang + 1) else {
+            continue;
+        };
+        if !matches!(
+            tokens[name_index].kind,
+            TokenKind::Ident | TokenKind::RawIdent
+        ) {
+            continue;
+        }
+        let Some(open) = next_non_trivia(&tokens, name_index + 1) else {
+            continue;
+        };
+        if delimiter_pair(tokens[open].kind).is_none() {
+            continue;
+        }
+        let close = matching_delimiter(&tokens, open)?;
+        let arms = scan_arms(&tokens, open, close)?;
+        if arms.is_empty() {
+            continue;
+        }
+
+        let line_start = source[..tokens[index].span.start]
+            .rfind('\n')
+            .map(|position| position + 1)
+            .unwrap_or(0);
+        let start = find_attr_span_start(source, line_start);
+        let mut end = tokens[close].span.end;
+        if let Some(semi) = next_non_trivia(&tokens, close + 1) {
+            if tokens[semi].kind == TokenKind::Semi {
+                end = tokens[semi].span.end;
+            }
+        }
+        defs.push(MacroDef {
+            name: source[tokens[name_index].span.clone()].to_string(),
+            span: start..end,
+            arms,
+        });
+    }
+
+    defs.sort_by(|left, right| right.span.len().cmp(&left.span.len()));
+    let mut outer = Vec::new();
+    for definition in defs {
+        if !outer.iter().any(|parent: &MacroDef| {
+            parent.span.start <= definition.span.start && parent.span.end >= definition.span.end
+        }) {
+            outer.push(definition);
+        }
+    }
+    outer.sort_by_key(|definition| definition.span.start);
+    Ok(outer)
+}
+
+fn find_attr_span_start(source: &str, pos: usize) -> usize {
+    let mut current = pos;
+    let mut found_attribute = false;
+    loop {
+        if current == 0 {
+            return if found_attribute { 0 } else { pos };
+        }
+        let Some(previous_newline) = source[..current].rfind('\n') else {
+            return if found_attribute { 0 } else { pos };
+        };
+        let line_start = source[..previous_newline]
+            .rfind('\n')
+            .map(|position| position + 1)
+            .unwrap_or(0);
+        let trimmed = source[line_start..previous_newline].trim();
+        if trimmed.is_empty() {
+            current = line_start;
+            continue;
+        }
+        if trimmed.starts_with("///")
+            || trimmed.starts_with("//!")
+            || (trimmed.starts_with("#[") && !trimmed.starts_with("#!["))
+            || trimmed.ends_with(']')
+        {
+            found_attribute = true;
+            current = line_start;
+            continue;
+        }
+        return if found_attribute { current } else { pos };
+    }
 }

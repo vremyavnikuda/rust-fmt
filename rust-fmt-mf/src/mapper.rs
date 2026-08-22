@@ -1,4 +1,6 @@
+use crate::parser::parse_macro_defs;
 use crate::types::{MacroDef, Mapping};
+use ra_ap_rustc_lexer::{tokenize, FrontmatterAllowed, TokenKind};
 
 /// Format all macro bodies in the source and return the full formatted source.
 ///
@@ -11,230 +13,589 @@ pub fn apply_formatting(
     formatted_shadow: &str,
     all_mappings: &[Mapping],
 ) -> String {
+    let sections = split_shadow_into_arms(formatted_shadow);
     let mut result = String::with_capacity(original_source.len());
-    let mut src_pos = 0;
-    // Split the shared shadow file into all arm sections upfront
-    let all_arm_sections = split_shadow_into_arms(formatted_shadow);
-    let mut mapping_offset = 0;
-    let mut section_offset = 0;
-    for def in macro_defs.iter() {
-        result.push_str(&original_source[src_pos..def.span.start]);
-        // Walk through the macro source, replacing each arm body position
-        let mut macro_pos = def.span.start;
-        for arm_idx in 0..def.arms.len() {
-            if section_offset + arm_idx >= all_arm_sections.len() {
-                let _body_start = def.arms[arm_idx].body_span.start;
-                let body_end = def.arms[arm_idx].body_span.end;
-                result.push_str(&original_source[macro_pos..body_end]);
-                macro_pos = body_end;
+    let mut source_position = 0usize;
+    let mut section_position = 0usize;
+    let mut mapping_position = 0usize;
+
+    for definition in macro_defs {
+        result.push_str(&original_source[source_position..definition.span.start]);
+        let first_arm = &definition.arms[0];
+        let header = &original_source[definition.span.start..first_arm.pattern_span.start];
+        let keyword = header.find("macro_rules").unwrap_or(0);
+        result.push_str(&header[..keyword]);
+        let macro_indent = structural_indent(original_source, definition.span.start + keyword);
+        let open = header.trim_end().chars().last().unwrap_or('{');
+        let close = match open {
+            '(' => ')',
+            '[' => ']',
+            _ => '}',
+        };
+        let arm_indent = macro_indent + 4;
+        result.push_str("macro_rules! ");
+        result.push_str(&definition.name);
+        result.push(' ');
+        result.push(open);
+        result.push('\n');
+
+        for (arm_index, arm) in definition.arms.iter().enumerate() {
+            let Some(section) = sections.get(section_position + arm_index) else {
+                result.push_str(&original_source[arm.pattern_span.start..arm.body_span.end]);
                 continue;
-            }
-            let arm = &def.arms[arm_idx];
-            let mapping = &all_mappings[mapping_offset + arm_idx];
-            let section = &all_arm_sections[section_offset + arm_idx];
-            let body_start = arm.body_span.start;
-            let body_end = arm.body_span.end;
-            // Calculate indent from the macro_rules! line. With span.start now
-            // including leading whitespace, count the whitespace directly.
-            let macro_indent = original_source[def.span.start..]
-                .chars()
-                .take_while(|c| *c == ' ' || *c == '\t')
-                .count();
-            let brace_indent = macro_indent + 4;
-            // Copy source from last position up to the `{`, normalizing pattern spacing
-            let pattern_text = &original_source[macro_pos..body_start];
-            let normalized_pattern = normalize_pattern_text(pattern_text);
-            // Collapse multi-line patterns to single line (rustfmt preserves
-            // newlines from the original source — we want them on one line).
-            let mut collapsed_pattern = collapse_pattern_newlines(&normalized_pattern);
-            // Normalize spacing around parens, brackets, braces, commas, and semicolons in patterns.
-            // Run AFTER collapsing so the replacements operate on single-line text.
-            // Loop to converge multi-space patterns (e.g. `[   $x:expr   ]` → `[$x:expr]`).
-            //
-            // IMPORTANT: For the first arm, `pattern_text` includes the macro header prefix
-            // `macro_rules! name {`. Find the first `{` (the macro body delimiter) and
-            // normalize only the suffix after it, to avoid removing the space before it.
-            // For subsequent arms the pattern text has no macro header, so normalize all of it.
-            let is_first_arm = macro_pos == def.span.start;
-            if is_first_arm {
-                if let Some(open_pos) = collapsed_pattern.find('{') {
-                    let prefix = format!("{} {{", collapsed_pattern[..open_pos].trim_end());
-                    let suffix = &collapsed_pattern[open_pos + 1..];
-                    let mut normalized_suffix = suffix.to_string();
-                    let mut prev: String;
-                    loop {
-                        prev = normalized_suffix.clone();
-                        normalized_suffix = normalized_suffix
-                            .replace(" (", "(")
-                            .replace("( ", "(")
-                            .replace(" )", ")")
-                            .replace(" [", "[")
-                            .replace("[ ", "[")
-                            .replace(" ]", "]")
-                            .replace(" {", "{")
-                            .replace("{ ", "{")
-                            .replace(" }", "}")
-                            .replace(" ,", ",")
-                            .replace(" ;", ";");
-                        if normalized_suffix == prev {
-                            break;
-                        }
-                    }
-                    collapsed_pattern = format!("{}{}", prefix, normalized_suffix);
-                } else {
-                    let mut prev: String;
-                    loop {
-                        prev = collapsed_pattern.clone();
-                        collapsed_pattern = collapsed_pattern
-                            .replace(" (", "(")
-                            .replace("( ", "(")
-                            .replace(" )", ")")
-                            .replace(" [", "[")
-                            .replace("[ ", "[")
-                            .replace(" ]", "]")
-                            .replace(" {", "{")
-                            .replace("{ ", "{")
-                            .replace(" }", "}")
-                            .replace(" ,", ",")
-                            .replace(" ;", ";");
-                        if collapsed_pattern == prev {
-                            break;
-                        }
-                    }
-                }
-            } else {
-                let mut prev: String;
-                loop {
-                    prev = collapsed_pattern.clone();
-                    collapsed_pattern = collapsed_pattern
-                        .replace(" (", "(")
-                        .replace("( ", "(")
-                        .replace(" )", ")")
-                        .replace(" [", "[")
-                        .replace("[ ", "[")
-                        .replace(" ]", "]")
-                        .replace(" {", "{")
-                        .replace("{ ", "{")
-                        .replace(" }", "}")
-                        .replace(" ,", ",")
-                        .replace(" ;", ";");
-                    if collapsed_pattern == prev {
-                        break;
-                    }
-                }
-            }
-            collapsed_pattern = normalize_arrow_spacing(&collapsed_pattern);
-            // Re-indent the pattern line to match brace_indent
-            if let Some(last_nl) = collapsed_pattern.rfind('\n') {
-                let prefix = &collapsed_pattern[..=last_nl];
-                let pattern_line = &collapsed_pattern[last_nl + 1..];
-                let trimmed = pattern_line.trim_start();
-                result.push_str(prefix);
-                result.push_str(&" ".repeat(brace_indent));
-                result.push_str(trimmed);
-            } else {
-                // No prefix newline — single-line context
-                if is_first_arm {
-                    if let Some(open_pos) = collapsed_pattern.find('{') {
-                        result.push_str(&collapsed_pattern[..=open_pos]);
-                        result.push('\n');
-                        result.push_str(&" ".repeat(brace_indent));
-                        result.push_str(collapsed_pattern[open_pos + 1..].trim_start());
-                    } else {
-                        result.push_str(collapsed_pattern.trim_start());
-                    }
-                } else {
-                    let trimmed = collapsed_pattern.trim_start();
-                    if let Some(separator) = trimmed
-                        .chars()
-                        .next()
-                        .filter(|c| *c == ';' || *c == ',')
-                    {
-                        result.push(separator);
-                        result.push('\n');
-                        result.push_str(&" ".repeat(brace_indent));
-                        result.push_str(trimmed[separator.len_utf8()..].trim_start());
-                    } else {
-                        result.push_str(&" ".repeat(brace_indent));
-                        result.push_str(trimmed);
-                    }
-                }
-            }
-            let formatted_inner = map_arm_section(section, mapping);
-            // Emit `{` (or `{{` for double_brace) and newline
-            let is_double_brace = original_source[body_start..].starts_with("{{");
+            };
+            let mapping = &all_mappings[mapping_position + arm_index];
+            result.push_str(&" ".repeat(arm_indent));
+            push_indented_matcher(
+                &mut result,
+                arm_indent,
+                &format_matcher(&original_source[arm.pattern_span.clone()]),
+            );
+            result.push_str(" => ");
+
+            let original_body = original_source[arm.body_span.clone()].trim();
+            let original_inner = &original_body[1..original_body.len() - 1];
+            let formatted_inner = crate::normalize_body_indent(&format_body_spacing(
+                &map_arm_section_with_original(section, mapping, original_inner),
+            ));
+            let double_brace = original_body.starts_with("{{");
             if formatted_inner.trim().is_empty() {
-                // Empty body: emit `{}` on the same line as the pattern
-                if is_double_brace {
-                    result.push_str("{{}}");
-                } else {
-                    result.push_str("{}");
-                }
+                result.push_str(if double_brace { "{{}}" } else { "{}" });
             } else {
-                if is_double_brace {
-                    result.push_str("{{\n");
-                } else {
-                    result.push('{');
-                    result.push('\n');
-                }
-                // Re-indent: find minimum indent in inner lines, map to brace_indent + 4
-                let min_indent = formatted_inner
+                result.push_str(if double_brace { "{{\n" } else { "{\n" });
+                let minimum_indent = formatted_inner
                     .lines()
-                    .filter(|l| !l.trim().is_empty())
-                    .map(|l| l.len() - l.trim_start().len())
+                    .filter(|line| !line.trim().is_empty())
+                    .map(|line| line.len() - line.trim_start().len())
                     .min()
                     .unwrap_or(0);
-                let base_indent = brace_indent + 4;
-                for line in formatted_inner.lines() {
+                for line in formatted_inner
+                    .lines()
+                    .filter(|line| !line.trim().is_empty())
+                {
                     let trimmed = line.trim_start();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    let line_indent = line.len() - trimmed.len();
-                    let total_indent = base_indent + line_indent.saturating_sub(min_indent);
-                    result.push_str(&" ".repeat(total_indent));
+                    let relative_indent = line.len() - trimmed.len();
+                    result.push_str(
+                        &" ".repeat(
+                            arm_indent + 4 + relative_indent.saturating_sub(minimum_indent),
+                        ),
+                    );
                     result.push_str(trimmed);
                     result.push('\n');
                 }
-                // Emit closing `}` (or `}}` for double_brace)
-                result.push_str(&" ".repeat(brace_indent));
-                if is_double_brace {
-                    result.push_str("}}");
-                } else {
-                    result.push('}');
-                }
+                result.push_str(&" ".repeat(arm_indent));
+                result.push_str(if double_brace { "}}" } else { "}" });
             }
-            macro_pos = body_end;
-        }
-        mapping_offset += def.arms.len();
-        section_offset += def.arms.len();
-        // Copy remaining content after last arm body (semicolons, closing braces)
-        let tail = &original_source[macro_pos..def.span.end];
-        let trimmed_tail = tail.trim();
-        if !tail.contains('\n')
-            && (trimmed_tail == "}" || trimmed_tail == ";}" || trimmed_tail == ",}")
-        {
-            if trimmed_tail.len() == 2 {
-                result.push(trimmed_tail.as_bytes()[0] as char);
+
+            let following = definition
+                .arms
+                .get(arm_index + 1)
+                .map_or(definition.span.end, |next| next.pattern_span.start);
+            let separator = &original_source[arm.body_span.end..following];
+            if separator.contains(';') {
+                result.push(';');
+            } else if separator.contains(',') {
+                result.push(',');
             }
             result.push('\n');
-            result.push_str(&" ".repeat(
-                original_source[def.span.start..]
-                    .chars()
-                    .take_while(|c| *c == ' ' || *c == '\t')
-                    .count(),
-            ));
-            result.push('}');
-        } else {
-            result.push_str(tail);
         }
-        src_pos = def.span.end;
+
+        result.push_str(&" ".repeat(macro_indent));
+        result.push(close);
+        if original_source[definition.span.clone()]
+            .trim_end()
+            .ends_with(';')
+        {
+            result.push(';');
+        }
+        section_position += definition.arms.len();
+        mapping_position += definition.arms.len();
+        source_position = definition.span.end;
     }
-    // Copy remaining code after last macro
-    if src_pos < original_source.len() {
-        result.push_str(&original_source[src_pos..]);
-    }
+
+    result.push_str(&original_source[source_position..]);
     result
+}
+
+pub(crate) fn format_definition_without_brace_bodies(
+    source: &str,
+    definition: &MacroDef,
+) -> String {
+    let mut result = String::with_capacity(source.len());
+    result.push_str(&source[..definition.span.start]);
+    let first_arm = &definition.arms[0];
+    let header = &source[definition.span.start..first_arm.pattern_span.start];
+    let keyword = header.find("macro_rules").unwrap_or(0);
+    result.push_str(&header[..keyword]);
+    let macro_indent = structural_indent(source, definition.span.start + keyword);
+    let open = header.trim_end().chars().last().unwrap_or('{');
+    let close = match open {
+        '(' => ')',
+        '[' => ']',
+        _ => '}',
+    };
+    let arm_indent = macro_indent + 4;
+    result.push_str("macro_rules! ");
+    result.push_str(&definition.name);
+    result.push(' ');
+    result.push(open);
+    result.push('\n');
+
+    for (index, arm) in definition.arms.iter().enumerate() {
+        result.push_str(&" ".repeat(arm_indent));
+        push_indented_matcher(
+            &mut result,
+            arm_indent,
+            &format_matcher(&source[arm.pattern_span.clone()]),
+        );
+        result.push_str(" => ");
+        let body = source[arm.body_span.clone()].trim();
+        let body_open = body.chars().next().unwrap_or('{');
+        let body_close = body.chars().last().unwrap_or('}');
+        let inner = &body[body_open.len_utf8()..body.len() - body_close.len_utf8()];
+        result.push(body_open);
+        if contains_comment(inner) {
+            result.push_str(inner);
+        } else {
+            result.push_str(&canonical_token_spacing(inner));
+        }
+        result.push(body_close);
+
+        let following = definition
+            .arms
+            .get(index + 1)
+            .map_or(definition.span.end, |next| next.pattern_span.start);
+        let separator = &source[arm.body_span.end..following];
+        if separator.contains(';') {
+            result.push(';');
+        } else if separator.contains(',') {
+            result.push(',');
+        }
+        result.push('\n');
+    }
+
+    result.push_str(&" ".repeat(macro_indent));
+    result.push(close);
+    if source[definition.span.clone()].trim_end().ends_with(';') {
+        result.push(';');
+    }
+    result.push_str(&source[definition.span.end..]);
+    result
+}
+
+fn push_indented_matcher(output: &mut String, indent: usize, matcher: &str) {
+    let mut lines = matcher.lines();
+    if let Some(first) = lines.next() {
+        output.push_str(first);
+    }
+    for line in lines {
+        output.push('\n');
+        output.push_str(&" ".repeat(indent));
+        output.push_str(line);
+    }
+}
+
+fn structural_indent(source: &str, position: usize) -> usize {
+    let mut depth = 0usize;
+    for token in tokenize(&source[..position], FrontmatterAllowed::Yes) {
+        match token.kind {
+            TokenKind::OpenBrace => depth += 1,
+            TokenKind::CloseBrace => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    depth * 4
+}
+
+fn format_matcher(source: &str) -> String {
+    if contains_comment(source) {
+        return format_commented_matcher(source);
+    }
+    canonical_token_spacing_with_fragments(source)
+}
+
+pub(crate) fn canonical_token_spacing(source: &str) -> String {
+    canonical_token_spacing_impl(source, false)
+}
+
+fn canonical_token_spacing_with_fragments(source: &str) -> String {
+    canonical_token_spacing_impl(source, true)
+}
+
+fn canonical_token_spacing_impl(source: &str, fragment_colons: bool) -> String {
+    let tokens = crate::parser::significant_tokens(source).unwrap_or_default();
+    let mut output = String::with_capacity(source.len());
+    for (index, token) in tokens.iter().enumerate() {
+        let current = token.text.as_str();
+        let previous = index
+            .checked_sub(1)
+            .map(|position| tokens[position].text.as_str());
+        let before_previous = index
+            .checked_sub(2)
+            .map(|position| tokens[position].text.as_str());
+        let fragment_name = fragment_colons
+            && current != "$"
+            && previous == Some(":")
+            && is_fragment_specifier(&tokens, index);
+        let repetition_operator = is_repetition_operator(&tokens, index);
+        let repetition_separator = is_repetition_separator(&tokens, index);
+        let previous_repetition = index
+            .checked_sub(1)
+            .is_some_and(|position| is_repetition_operator(&tokens, position));
+        let joint_operator = previous.is_some_and(|left| is_joint_operator(left, current));
+        let generic_punctuation = is_generic_angle(&tokens, index);
+        let previous_unary = index
+            .checked_sub(1)
+            .is_some_and(|position| is_unary_operator(&tokens, position));
+        let at_binding = current == "@"
+            && index
+                .checked_sub(1)
+                .is_some_and(|position| is_fragment_specifier(&tokens, position));
+        let previous_at_binding =
+            previous == Some("@") && index >= 2 && is_fragment_specifier(&tokens, index - 2);
+        let marker_argument = current == "(" && before_previous == Some("@");
+        let no_space = index == 0
+            || matches!(current, ")" | "]" | "," | ";" | ":" | "." | "!" | "?")
+            || current == "@" && !at_binding
+            || matches!(previous, Some("(" | "[" | "$" | "#" | "." | "!"))
+            || previous == Some("@") && !previous_at_binding
+            || (current == "("
+                && !marker_argument
+                && (matches!(previous, Some(")" | "]" | ">" | "!"))
+                    || previous.is_some_and(|_| {
+                        tokens[index - 1].kind == "Ident" || tokens[index - 1].kind == "RawIdent"
+                    })))
+            || fragment_name
+            || repetition_operator
+            || repetition_separator
+            || previous_unary
+            || generic_punctuation
+            || previous == Some("<") && index >= 2 && is_generic_angle(&tokens, index - 1)
+            || joint_operator
+            || previous == Some(":") && before_previous == Some(":")
+            || previous_repetition && matches!(current, "," | ";" | ")" | "]")
+            || (previous == Some("{") && current == "}")
+            || (current == "}" && previous == Some("{"));
+        if !no_space {
+            output.push(' ');
+        }
+        output.push_str(current);
+    }
+    output.trim().to_string()
+}
+
+fn is_fragment_specifier(tokens: &[crate::parser::SignificantToken], index: usize) -> bool {
+    index >= 3
+        && tokens[index - 1].text == ":"
+        && (tokens[index - 3].text == "$" || index >= 4 && tokens[index - 4].text == "$")
+}
+
+fn is_joint_operator(left: &str, right: &str) -> bool {
+    matches!(
+        (left, right),
+        (":", ":")
+            | ("-", ">")
+            | ("=", ">")
+            | ("=", "=")
+            | ("!", "=")
+            | ("<", "=")
+            | (">", "=")
+            | ("+", "=")
+            | ("-", "=")
+            | ("*", "=")
+            | ("/", "=")
+            | ("%", "=")
+            | ("&", "=")
+            | ("|", "=")
+            | ("^", "=")
+            | ("&", "&")
+            | ("|", "|")
+            | ("<", "<")
+            | (">", ">")
+            | (".", ".")
+            | (".", "=")
+    )
+}
+
+fn is_repetition_operator(tokens: &[crate::parser::SignificantToken], index: usize) -> bool {
+    if !matches!(tokens[index].text.as_str(), "*" | "+" | "?") {
+        return false;
+    }
+    let mut close = match index.checked_sub(1) {
+        Some(position) if tokens[position].text == ")" => position,
+        Some(position) => match position.checked_sub(1) {
+            Some(close) if tokens[close].text == ")" => close,
+            _ => return false,
+        },
+        _ => return false,
+    };
+    let mut depth = 1usize;
+    while let Some(position) = close.checked_sub(1) {
+        close = position;
+        match tokens[position].text.as_str() {
+            ")" => depth += 1,
+            "(" => {
+                depth -= 1;
+                if depth == 0 {
+                    return position > 0 && tokens[position - 1].text == "$";
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn is_repetition_separator(tokens: &[crate::parser::SignificantToken], index: usize) -> bool {
+    index > 0
+        && index + 1 < tokens.len()
+        && tokens[index - 1].text == ")"
+        && is_repetition_operator(tokens, index + 1)
+}
+
+fn is_unary_operator(tokens: &[crate::parser::SignificantToken], index: usize) -> bool {
+    let operator = tokens[index].text.as_str();
+    if matches!(operator, "!" | "&") {
+        return !is_joint_operator(
+            operator,
+            tokens
+                .get(index + 1)
+                .map_or("", |token| token.text.as_str()),
+        );
+    }
+    if !matches!(operator, "-" | "*" | "+") || is_repetition_operator(tokens, index) {
+        return false;
+    }
+    let Some(previous) = index
+        .checked_sub(1)
+        .map(|position| tokens[position].text.as_str())
+    else {
+        return true;
+    };
+    matches!(
+        previous,
+        "(" | "[" | "{" | "," | ";" | ":" | "=" | "=>" | "->" | "return"
+    ) || matches!(previous, "+" | "-" | "*" | "/" | "%" | "&&" | "||")
+}
+
+fn is_generic_angle(tokens: &[crate::parser::SignificantToken], index: usize) -> bool {
+    match tokens[index].text.as_str() {
+        "<" => looks_like_generic_open(tokens, index),
+        ">" => (0..index).rev().any(|position| {
+            tokens[position].text == "<" && looks_like_generic_open(tokens, position)
+        }),
+        _ => false,
+    }
+}
+
+fn looks_like_generic_open(tokens: &[crate::parser::SignificantToken], index: usize) -> bool {
+    if index == 0 || tokens[index].text != "<" {
+        return false;
+    }
+    let valid_prefix = matches!(tokens[index - 1].text.as_str(), "_" | ")" | "]" | ">")
+        || matches!(tokens[index - 1].kind.as_str(), "Ident" | "RawIdent")
+        || index >= 2 && tokens[index - 1].text == ":" && tokens[index - 2].text == ":";
+    valid_prefix && tokens[index + 1..].iter().any(|token| token.text == ">")
+}
+
+fn format_body_spacing(source: &str) -> String {
+    if let Some(generated) = format_generated_macro(source) {
+        return generated;
+    }
+    let mut lines = Vec::new();
+    for line in source.lines().filter(|line| !line.trim().is_empty()) {
+        let indent = line.len() - line.trim_start().len();
+        let original = line.trim();
+        let mut formatted = if contains_comment(original)
+            || matches!(original, ")*" | ")+" | ")?" | "),*" | "),+" | "),?")
+        {
+            original.to_string()
+        } else {
+            canonical_token_spacing(original)
+        };
+        formatted = formatted
+            .replace("), *", "),*")
+            .replace("), +", "),+")
+            .replace("), ?", "),?");
+        if formatted.starts_with("$(#") && formatted.contains(")* $") {
+            let split = formatted.find(")* $").expect("checked above") + 2;
+            lines.push(format!("{}{}", " ".repeat(indent), &formatted[..split]));
+            lines.push(format!(
+                "{}{}",
+                " ".repeat(indent),
+                formatted[split..].trim_start()
+            ));
+        } else if lines.last().is_some_and(|previous: &String| {
+            (previous.trim_end().ends_with(" enum")
+                || previous.trim_end().ends_with(" struct")
+                || previous.trim() == "impl")
+                && formatted.starts_with('$')
+                || previous.trim() == "$vis" && formatted.starts_with("struct ")
+        }) {
+            let previous = lines.pop().expect("checked above");
+            lines.push(format!("{} {}", previous.trim_end(), formatted));
+        } else {
+            lines.push(format!("{}{}", " ".repeat(indent), formatted));
+        }
+    }
+    expand_inline_structs(&lines.join("\n"))
+}
+
+fn format_generated_macro(source: &str) -> Option<String> {
+    let tokens = crate::parser::significant_tokens(source).ok()?;
+    let keyword = tokens
+        .iter()
+        .position(|token| token.text == "macro_rules")?;
+    let bang = keyword + 1;
+    if tokens.get(bang)?.text != "!" {
+        return None;
+    }
+    let open = tokens[bang + 1..]
+        .iter()
+        .position(|token| token.text == "{")?
+        + bang
+        + 1;
+    let close = matching_text_delimiter(&tokens, open)?;
+    let pattern_open = open + 1;
+    let pattern_close = matching_text_delimiter(&tokens, pattern_open)?;
+    let body_open = tokens[pattern_close + 1..close]
+        .iter()
+        .position(|token| token.text == "{")?
+        + pattern_close
+        + 1;
+    let body_close = matching_text_delimiter(&tokens, body_open)?;
+    let name =
+        canonical_token_spacing(&source[tokens[bang + 1].span.start..tokens[open].span.start]);
+    let pattern = canonical_token_spacing_with_fragments(
+        &source[tokens[pattern_open].span.start..tokens[pattern_close].span.end],
+    );
+    let body =
+        canonical_token_spacing(&source[tokens[body_open].span.end..tokens[body_close].span.start]);
+    let mut output = format!("macro_rules! {name} {{\n    {pattern} => {{");
+    if !body.is_empty() {
+        output.push('\n');
+        output.push_str("        ");
+        output.push_str(&body);
+        output.push('\n');
+        output.push_str("    ");
+    }
+    output.push('}');
+    if tokens
+        .get(body_close + 1)
+        .is_some_and(|token| token.text == ";")
+    {
+        output.push(';');
+    }
+    output.push_str("\n}");
+    Some(output)
+}
+
+fn matching_text_delimiter(
+    tokens: &[crate::parser::SignificantToken],
+    open: usize,
+) -> Option<usize> {
+    let close = match tokens.get(open)?.text.as_str() {
+        "(" => ")",
+        "[" => "]",
+        "{" => "}",
+        _ => return None,
+    };
+    let mut depth = 1usize;
+    for index in open + 1..tokens.len() {
+        if tokens[index].text == tokens[open].text {
+            depth += 1;
+        } else if tokens[index].text == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(index);
+            }
+        }
+    }
+    None
+}
+
+pub(crate) fn expand_inline_structs(source: &str) -> String {
+    let mut output = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        let indent = line.len() - line.trim_start().len();
+        let item = trimmed.starts_with("struct ")
+            || trimmed.contains(" struct ")
+            || trimmed.starts_with("$vis struct ");
+        let Some(open) = item.then(|| trimmed.find('{')).flatten() else {
+            output.push(line.to_string());
+            continue;
+        };
+        let Some(close) = trimmed.rfind('}') else {
+            output.push(line.to_string());
+            continue;
+        };
+        if open >= close {
+            output.push(line.to_string());
+            continue;
+        }
+        let inner = canonical_token_spacing(&trimmed[open + 1..close]);
+        let header = trimmed[..open].trim_end();
+        if header.starts_with("#[") {
+            if let Some(attribute_end) = header.find("] ") {
+                output.push(format!(
+                    "{}{}",
+                    " ".repeat(indent),
+                    &header[..=attribute_end]
+                ));
+                output.push(format!(
+                    "{}{} {{",
+                    " ".repeat(indent),
+                    header[attribute_end + 2..].trim_start()
+                ));
+            } else {
+                output.push(format!("{}{} {{", " ".repeat(indent), header));
+            }
+        } else {
+            output.push(format!("{}{} {{", " ".repeat(indent), header));
+        }
+        if !inner.is_empty() {
+            output.push(format!("{}{}", " ".repeat(indent + 4), inner));
+        }
+        output.push(format!("{}}}", " ".repeat(indent)));
+    }
+    output.join("\n")
+}
+
+fn format_commented_matcher(source: &str) -> String {
+    let mut output = Vec::new();
+    let mut depth = 0usize;
+    for line in source
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let closes = line.starts_with([')', ']', '}']);
+        if closes {
+            depth = depth.saturating_sub(1);
+        }
+        let formatted = if let Some(comment) = line.find("//") {
+            let code = line[..comment].trim();
+            if code.is_empty() {
+                line.to_string()
+            } else {
+                format!(
+                    "{} {}",
+                    canonical_token_spacing_with_fragments(code),
+                    &line[comment..]
+                )
+            }
+        } else if contains_comment(line) {
+            line.to_string()
+        } else {
+            canonical_token_spacing_with_fragments(line)
+        };
+        output.push(format!("{}{}", " ".repeat(depth * 4), formatted));
+        if !closes && line.ends_with(['(', '[', '{']) {
+            depth += 1;
+        }
+    }
+    output.join("\n")
 }
 
 /// Split the formatted shadow file into individual arm body sections.
@@ -242,6 +603,37 @@ pub fn apply_formatting(
 /// Each arm is `macro_rules! __rustfmt_mf_arm_N { () => { BODY }; }`.
 /// We extract just the BODY content (inside the `{}` after `=>`).
 pub(crate) fn split_shadow_into_arms(shadow_file: &str) -> Vec<String> {
+    if let Ok(definitions) = parse_macro_defs(shadow_file) {
+        let parsed = definitions
+            .into_iter()
+            .filter(|definition| definition.name.starts_with("__rustfmt_mf_arm_"))
+            .filter_map(|definition| definition.arms.into_iter().next())
+            .map(|arm| {
+                let body = &shadow_file[arm.body_span];
+                let inner = &body[1..body.len() - 1];
+                if inner.contains('\n') {
+                    inner
+                        .strip_prefix('\n')
+                        .unwrap_or(inner)
+                        .trim_end_matches([' ', '\t'])
+                        .strip_suffix('\n')
+                        .unwrap_or_else(|| {
+                            inner
+                                .strip_prefix('\n')
+                                .unwrap_or(inner)
+                                .trim_end_matches([' ', '\t'])
+                        })
+                        .to_string()
+                } else {
+                    inner.trim().to_string()
+                }
+            })
+            .collect::<Vec<_>>();
+        if !parsed.is_empty() {
+            return parsed;
+        }
+    }
+
     let mut sections = Vec::new();
     let mut in_arm = false;
     let mut arm_lines: Vec<&str> = Vec::new();
@@ -361,149 +753,6 @@ fn extract_arm_body_single(line: &str) -> Option<&str> {
     }
 }
 
-/// Normalize `$(...)` spacing in pattern text (macro arm patterns).
-/// Scans for `$(` and normalizes spacing around delimiters:
-///   `$ (` → `$(`  `( x )` → `(x)`  `) *` → `)*`  `) ,` → `),`
-fn normalize_pattern_text(text: &str) -> String {
-    let mut result = String::new();
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'$' {
-            let mut j = i + 1;
-            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-                j += 1;
-            }
-            if j < bytes.len() && bytes[j] == b'(' {
-                result.push('$');
-                result.push('(');
-                let mut depth = 1;
-                let mut k = j + 1;
-                while k < bytes.len() && bytes[k].is_ascii_whitespace() && bytes[k] != b'\n' {
-                    k += 1;
-                }
-                let inner_start = k;
-                while k < bytes.len() && depth > 0 {
-                    if bytes[k] == b'(' {
-                        depth += 1;
-                    }
-                    if bytes[k] == b')' {
-                        depth -= 1;
-                    }
-                    if depth > 0 {
-                        k += 1;
-                    }
-                }
-                let inner_end = k;
-                if depth == 0 {
-                    let inner = &text[inner_start..inner_end];
-                    let inner_norm = normalize_pattern_text(inner);
-                    result.push_str(inner_norm.trim());
-                    result.push(')');
-                    k += 1;
-                    while k < bytes.len() && bytes[k].is_ascii_whitespace() && bytes[k] != b'\n' {
-                        k += 1;
-                    }
-                    if k < bytes.len() && (bytes[k] == b',' || bytes[k] == b';') {
-                        result.push(bytes[k] as char);
-                        k += 1;
-                    }
-                    if k < bytes.len() && (bytes[k] == b'*' || bytes[k] == b'+' || bytes[k] == b'?')
-                    {
-                        result.push(bytes[k] as char);
-                        k += 1;
-                    }
-                    i = k;
-                    continue;
-                }
-            }
-        }
-        result.push(bytes[i] as char);
-        i += 1;
-    }
-    result
-}
-
-fn normalize_arrow_spacing(text: &str) -> String {
-    let trimmed = text.trim_end();
-    if let Some(before) = trimmed.strip_suffix("=>") {
-        format!("{} => ", before.trim_end())
-    } else {
-        text.to_string()
-    }
-}
-
-/// Collapse multi-line arm patterns to a single line.
-/// Preserves the `macro_rules! name {` header and its first
-/// newline+whitespace (the indent before the arm pattern).
-/// Only collapses newlines within the arm pattern itself.
-fn collapse_pattern_newlines(text: &str) -> String {
-    // Find the macro opening `{` (the first `{` that isn't inside $(...) )
-    let mut in_dollar_paren = false;
-    let mut macro_open = None;
-    let bytes = text.as_bytes();
-    for (idx, &b) in bytes.iter().enumerate() {
-        if b == b'$' && idx + 1 < bytes.len() && bytes[idx + 1] == b'(' {
-            in_dollar_paren = true;
-            continue;
-        }
-        if in_dollar_paren {
-            if b == b')' {
-                in_dollar_paren = false;
-            }
-            continue;
-        }
-        if b == b'{' {
-            macro_open = Some(idx);
-            break;
-        }
-    }
-    if let Some(open_pos) = macro_open {
-        let prefix = &text[..=open_pos];
-        let rest = &text[open_pos + 1..];
-        // Keep the first newline+indent after `{`, but collapse everything
-        // within the arm pattern (between `(` and `) => {`)
-        let trimmed = rest.trim_start();
-        let leading_ws = &rest[..rest.len() - trimmed.len()];
-        // Only collapse newlines if there are any in the arm pattern
-        if !trimmed.contains('\n') {
-            return text.to_string();
-        }
-        let mut collapsed = String::with_capacity(trimmed.len());
-        let mut prev_was_space = false;
-        for ch in trimmed.chars() {
-            if ch == '\n' || ch == '\r' {
-                if !prev_was_space {
-                    collapsed.push(' ');
-                    prev_was_space = true;
-                }
-            } else {
-                collapsed.push(ch);
-                prev_was_space = ch == ' ';
-            }
-        }
-        // Normalize multiple spaces to single
-        let mut result = String::with_capacity(text.len());
-        result.push_str(prefix);
-        result.push_str(leading_ws);
-        let mut prev_space = false;
-        for ch in collapsed.chars() {
-            if ch == ' ' {
-                if !prev_space {
-                    result.push(ch);
-                    prev_space = true;
-                }
-            } else {
-                result.push(ch);
-                prev_space = false;
-            }
-        }
-        result
-    } else {
-        text.to_string()
-    }
-}
-
 /// Remove space between a `$metavar` and `(` in body text.
 /// Rustfmt adds a space before `(` inside macro bodies
 /// (e.g. `$name ($arg)` → `$name($arg)`).
@@ -531,8 +780,9 @@ fn remove_metavar_paren_space(text: &str) -> String {
                 result.push_str(&text[start..i]);
             }
         } else {
-            result.push(bytes[i] as char);
-            i += 1;
+            let ch = text[i..].chars().next().expect("index is a char boundary");
+            result.push(ch);
+            i += ch.len_utf8();
         }
     }
     result
@@ -575,7 +825,10 @@ fn collapse_short_body(text: &str) -> String {
             return text.to_string();
         }
     }
-    let single = lines.join(" ");
+    if lines.first().is_some_and(|line| line.starts_with("$(")) {
+        return text.to_string();
+    }
+    let single = normalize_body_spacing(&lines.join(" "));
     if single.len() <= 80 {
         single
     } else {
@@ -585,7 +838,7 @@ fn collapse_short_body(text: &str) -> String {
 
 /// Collapse a simple delimited list (tuple, bracket, block) to single line
 /// if it was split by rustfmt unnecessarily (e.g. short tuple `(a, b, c)`).
-fn collapse_simple_delimited(text: &str) -> String {
+fn collapse_simple_delimited(text: &str, preserve_trailing_comma: bool) -> String {
     let trimmed = text.trim();
     if !trimmed.contains('\n') {
         return text.to_string();
@@ -618,13 +871,10 @@ fn collapse_simple_delimited(text: &str) -> String {
     if !all_end_with_comma && !is_single_item {
         return text.to_string();
     }
-    let joined = parts.join(" ");
-    // Strip trailing comma before the closing delimiter
-    let joined = if joined.ends_with(',') {
-        joined[..joined.len() - 1].trim_end().to_string()
-    } else {
-        joined
-    };
+    let mut joined = parts.join(" ");
+    if !preserve_trailing_comma && joined.ends_with(',') {
+        joined.pop();
+    }
     let single = format!("{}{}{}", open, joined, close);
     if single.len() <= 80 {
         single
@@ -646,20 +896,83 @@ pub(crate) fn detect_arm_opener(line: &str) -> Option<usize> {
 /// Map a single formatted arm section back to original macro syntax.
 ///
 /// Handles `__mf_rep_*! { ... }` markers inline (not just at line start).
+#[cfg(test)]
 pub(crate) fn map_arm_section(section: &str, mapping: &Mapping) -> String {
-    let with_reps = replace_rep_markers(section);
+    map_arm_section_with_original(section, mapping, section)
+}
+
+fn map_arm_section_with_original(section: &str, mapping: &Mapping, original: &str) -> String {
+    let with_reps = replace_rep_markers(section, &format!("{}rep_", mapping.marker_prefix()));
     let restored = restore_placeholders(&with_reps, mapping);
     let spaced = normalize_body_spacing(&restored);
     let spaced = remove_metavar_paren_space(&spaced);
-    let spaced = collapse_simple_delimited(&spaced);
+    let spaced = collapse_simple_delimited(&spaced, has_trailing_comma(original));
     collapse_short_body(&spaced)
+}
+
+fn has_trailing_comma(text: &str) -> bool {
+    let tokens = tokenize(text, FrontmatterAllowed::No)
+        .filter(|token| {
+            !matches!(
+                token.kind,
+                TokenKind::Whitespace
+                    | TokenKind::LineComment { .. }
+                    | TokenKind::BlockComment { .. }
+            )
+        })
+        .map(|token| token.kind)
+        .collect::<Vec<_>>();
+    tokens.len() >= 2
+        && matches!(
+            tokens.last(),
+            Some(TokenKind::CloseParen | TokenKind::CloseBracket | TokenKind::CloseBrace)
+        )
+        && tokens[tokens.len() - 2] == TokenKind::Comma
+}
+
+fn contains_comment(text: &str) -> bool {
+    tokenize(text, FrontmatterAllowed::No).any(|token| {
+        matches!(
+            token.kind,
+            TokenKind::LineComment { .. } | TokenKind::BlockComment { .. }
+        )
+    })
 }
 
 /// Normalize proc_macro2's default spacing inside a single-line
 /// macro invocation body.  proc_macro2 adds spaces between every token
 /// (e.g. `__m_0 . to_string ()` instead of `__m_0.to_string()`), and
 /// because this sits inside `__mf_rep_*!{ … }` rustfmt never touches it.
+fn transform_outside_literals_and_comments(
+    text: &str,
+    transform: impl Fn(&str) -> String,
+) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut offset = 0usize;
+    let mut segment_start = 0usize;
+    for token in tokenize(text, FrontmatterAllowed::No) {
+        let end = offset + token.len as usize;
+        if matches!(
+            token.kind,
+            TokenKind::Literal { .. }
+                | TokenKind::LineComment { .. }
+                | TokenKind::BlockComment { .. }
+        ) {
+            result.push_str(&transform(&text[segment_start..offset]));
+            result.push_str(&text[offset..end]);
+            segment_start = end;
+        }
+        offset = end;
+    }
+    result.push_str(&transform(&text[segment_start..]));
+    result
+}
+
 fn normalize_inner_spacing(text: &str) -> String {
+    transform_outside_literals_and_comments(text, normalize_inner_spacing_raw)
+}
+
+fn normalize_inner_spacing_raw(text: &str) -> String {
     let mut result = text.trim().to_string();
     // Collapse space before a lone dot: ` . ` → `.`
     result = result.replace(" . ", ".");
@@ -674,9 +987,6 @@ fn normalize_inner_spacing(text: &str) -> String {
     // Collapse `( ` → `(`  and  ` )` → `)`  (space around parens)
     result = result.replace("( ", "(");
     result = result.replace(" )", ")");
-    // Collapse `{ ` → `{`  and  ` }` → `}`  (space around braces)
-    result = result.replace("{ ", "{");
-    result = result.replace(" }", "}");
     // Collapse `[ ` → `[`  and  ` ]` → `]`  (space around brackets)
     result = result.replace("[ ", "[");
     result = result.replace(" ]", "]");
@@ -696,6 +1006,10 @@ fn normalize_inner_spacing(text: &str) -> String {
 /// Also protects ` )+`, ` )*`, ` )?` (repetition closers) from the
 /// `" )"` → `")"` rule, which would break layout inside $()...)+ blocks.
 fn normalize_body_spacing(text: &str) -> String {
+    transform_outside_literals_and_comments(text, normalize_body_spacing_raw)
+}
+
+fn normalize_body_spacing_raw(text: &str) -> String {
     let mut result = text.to_string();
     // Protect repetition closers: ` )+`, ` )*`, ` )?`
     result = result.replace(" )+", "\x00RP\x00");
@@ -720,9 +1034,16 @@ fn normalize_body_spacing(text: &str) -> String {
     // appear inside unformatted macro invocations.
     result = result.replace("( ", "(");
     result = result.replace(" )", ")");
+    result = result.replace("[ ", "[");
+    result = result.replace(" ]", "]");
     // Remove space between a metavar and `(`: rustfmt often adds a space
     // before `(` after an ident/macro-name (e.g., `$name ($arg)` → `$name($arg)`).
     result = result.replace("$ (", "$(");
+    result = result.replace("), *", "),*");
+    result = result.replace("), +", "),+");
+    result = result.replace("), ?", "),?");
+    result = result.replace("); *", ");*");
+    result = result.replace("); +", ");+");
     // Restore repetition closers
     result = result.replace("\x00RP\x00", " )+");
     result = result.replace("\x00RS\x00", " )*");
@@ -732,14 +1053,14 @@ fn normalize_body_spacing(text: &str) -> String {
 
 /// Replace `__mf_rep_{kind}! { inner }` markers with `$(inner){char}{sep}`.
 /// Handles nested markers recursively.
-fn replace_rep_markers(text: &str) -> String {
+fn replace_rep_markers(text: &str, repetition_prefix: &str) -> String {
     let mut result = String::new();
     let bytes = text.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if text[i..].starts_with("__mf_rep_") {
+        if text[i..].starts_with(repetition_prefix) {
             let marker_start = i;
-            let kind_start = i + "__mf_rep_".len();
+            let kind_start = i + repetition_prefix.len();
             let rest = &text[kind_start..];
             let kind_end = rest.find('!').unwrap_or(rest.len());
             let kind = &rest[..kind_end];
@@ -753,7 +1074,7 @@ fn replace_rep_markers(text: &str) -> String {
                 "plus_semi" => ('+', Some(';')),
                 _ => {
                     // Not a valid marker, push as-is
-                    result.push_str("__mf_rep_");
+                    result.push_str(repetition_prefix);
                     i = kind_start;
                     continue;
                 }
@@ -774,9 +1095,17 @@ fn replace_rep_markers(text: &str) -> String {
                 if depth == 0 {
                     // Extract inner and recursively process
                     let inner = &text[brace_pos + 1..close_pos - 1];
-                    let inner_replaced = replace_rep_markers(inner);
+                    let inner_replaced = replace_rep_markers(inner, repetition_prefix);
                     // Normalize spacing in inner content
-                    let inner_final = if inner_replaced.contains('\n') {
+                    let compact = canonical_token_spacing(&inner_replaced);
+                    let inner_final = if inner_replaced.contains('\n')
+                        && compact.len() <= 80
+                        && !compact.contains(['{', '}', ';'])
+                        && !compact.contains("$(")
+                        && !contains_comment(&inner_replaced)
+                    {
+                        compact
+                    } else if inner_replaced.contains('\n') {
                         inner_replaced
                     } else {
                         normalize_inner_spacing(&inner_replaced)
@@ -839,8 +1168,9 @@ fn replace_rep_markers(text: &str) -> String {
             result.push_str(&text[marker_start..marker_start + 10]);
             i = marker_start + 10;
         } else {
-            result.push(bytes[i] as char);
-            i += 1;
+            let ch = text[i..].chars().next().expect("index is a char boundary");
+            result.push(ch);
+            i += ch.len_utf8();
         }
     }
     result

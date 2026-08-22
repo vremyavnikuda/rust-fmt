@@ -11,6 +11,8 @@ pub fn run_rustfmt_no_macro(
 ) -> anyhow::Result<String> {
     let mut cmd = Command::new(rustfmt_path);
     cmd.args(["--edition", edition]);
+    cmd.args(["--config", "format_macro_bodies=false"]);
+    cmd.args(["--config", "format_macro_matchers=false"]);
     if let Some(path) = config_path {
         cmd.args(["--config-path", path]);
     }

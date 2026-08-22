@@ -8,6 +8,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import platform
 import stat
 import subprocess
@@ -44,6 +45,14 @@ def get_platform(sys_platform: str | None = None, machine: str | None = None) ->
     return f"{os_name}-{arch}"
 
 
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as binary:
+        for chunk in iter(lambda: binary.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build rust-fmt-mf for current platform")
     group = parser.add_mutually_exclusive_group()
@@ -76,7 +85,13 @@ def main() -> int:
     shutil.copy2(str(src), str(dst))
     if sys.platform != "win32":
         dst.chmod(dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    source_hash = sha256(src)
+    bundled_hash = sha256(dst)
+    if source_hash != bundled_hash:
+        print(f"Artifact hash mismatch: {src} != {dst}", file=sys.stderr)
+        return 1
     print(f"-> {dst}")
+    print(f"sha256 {bundled_hash}")
     return 0
 
 if __name__ == "__main__":

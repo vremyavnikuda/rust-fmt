@@ -1,4 +1,5 @@
 import * as cp from 'child_process';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -106,15 +107,13 @@ export class RustFormatter {
         if (token?.isCancellationRequested) {
             return null;
         }
-        // Normalize spacing first — improves both native and TS paths
-        const normalizedText = normalizeMacroSpacing(text);
         if (this.config.nativeMacroFormatter && text.includes('macro_rules!')) {
             console.log('[rust-fmt] Using native macro formatter');
-            const nativeResult = await formatWithNativeMacroFormatter(normalizedText, this.config, context, token);
+            const nativeResult = await formatWithNativeMacroFormatter(text, this.config, context, token);
             if (nativeResult !== null) {
                 return nativeResult;
             }
-            console.log('[rust-fmt] Native macro formatter failed, falling back to TS normalize');
+            console.log('[rust-fmt] Native macro formatter failed, falling back to rustfmt with original text');
         }
         console.log(`[rust-fmt] Formatting with rustfmt at: ${this.config.rustfmtPath}`);
         return new Promise((resolve) => {
@@ -192,8 +191,7 @@ export class RustFormatter {
                 finish(null);
                 return;
             }
-            const finalText = text.includes('macro_rules!') ? normalizeMacroBodies(normalizedText) : normalizedText;
-            rustfmt.stdin.write(finalText);
+            rustfmt.stdin.write(text);
             rustfmt.stdin.end();
         });
     }
@@ -314,6 +312,26 @@ export function getNativeMacroFormatterPath(config: FormatterConfig): string | n
     return null;
 }
 
+const loggedNativeBinaries = new Set<string>();
+
+export async function sha256File(filePath: string): Promise<string> {
+    const contents = await fs.promises.readFile(filePath);
+    return crypto.createHash('sha256').update(contents).digest('hex');
+}
+
+async function logNativeBinary(binaryPath: string): Promise<void> {
+    if (loggedNativeBinaries.has(binaryPath)) {
+        return;
+    }
+    loggedNativeBinaries.add(binaryPath);
+    try {
+        const hash = await sha256File(binaryPath);
+        console.log(`[rust-fmt] Native macro formatter: ${binaryPath} (sha256 ${hash})`);
+    } catch (error) {
+        console.warn(`[rust-fmt] Cannot hash native macro formatter ${binaryPath}: ${error}`);
+    }
+}
+
 export async function formatWithNativeMacroFormatter(
     text: string,
     config: FormatterConfig,
@@ -327,6 +345,7 @@ export async function formatWithNativeMacroFormatter(
     if (token?.isCancellationRequested) {
         return null;
     }
+    await logNativeBinary(binaryPath);
     return new Promise((resolve) => {
         const args: string[] = [];
         args.push('--edition', context.edition || '2021');
@@ -372,6 +391,9 @@ export async function formatWithNativeMacroFormatter(
         proc.on('close', (code) => {
             if (settled) return;
             if (code === 0) {
+                if (stderr.trim()) {
+                    console.log(`[rust-fmt] Native macro formatter diagnostics:\n${stderr.trimEnd()}`);
+                }
                 finish(stdout || null);
             } else {
                 console.error(`[rust-fmt] Native macro formatter exited with code ${code}: ${stderr}`);
@@ -497,124 +519,9 @@ async function readToolchainFromFile(toolchainPath: string): Promise<string | un
 }
 
 export function normalizeMacroSpacing(text: string): string {
-    return text.split('\n').map(line => {
-        const indent = line.match(/^( +|\t*)/)?.[0] || '';
-        const rest = line.slice(indent.length);
-        const processed = rest
-            .replace(/([[({]) {2,}/g, '$1')
-            .replace(/ {2,}/g, ' ');
-        return indent + processed;
-    }).join('\n');
+    return text;
 }
 
 export function normalizeMacroBodies(text: string): string {
-    const lines = text.split('\n');
-    const result = [...lines];
-
-    // Pre-compute brace counts per line — eliminates O(n²) from repeated countChar
-    const openBrace = new Array<number>(lines.length);
-    const closeBrace = new Array<number>(lines.length);
-    for (let idx = 0; idx < lines.length; idx++) {
-        const ln = lines[idx];
-        let oc = 0, cc = 0;
-        for (let j = 0; j < ln.length; j++) {
-            const ch = ln[j];
-            if (ch === '{') oc++;
-            else if (ch === '}') cc++;
-        }
-        openBrace[idx] = oc;
-        closeBrace[idx] = cc;
-    }
-
-    let i = 0;
-    while (i < lines.length) {
-        const line = lines[i];
-        if (!/^\s*macro_rules!\s/.test(line)) { i++; continue; }
-        let depth = 0;
-        let end = i;
-        for (let j = i; j < lines.length; j++) {
-            depth += openBrace[j] - closeBrace[j];
-            if (depth === 0 && j > i) { end = j; break; }
-        }
-        const macroText = lines.slice(i, end + 1).join('\n');
-        let armNestDepth = 0;
-        let armLineStart = -1;
-        let armLines: string[] = [];
-        let armBodyLineStart = -1;
-        let armLineIndent = 0;
-        let currentLineIdx = 0;
-        for (let pos = 0; pos < macroText.length; pos++) {
-            const ch = macroText[pos];
-            if (ch === '\n') {
-                currentLineIdx++;
-                if (armNestDepth > 0 && currentLineIdx !== armLineStart) {
-                    armLines.push(lines[i + currentLineIdx]);
-                }
-                continue;
-            }
-            if (armNestDepth > 0) {
-                if (ch === '{') {
-                    armNestDepth++;
-                } else if (ch === '}') {
-                    armNestDepth--;
-                    if (armNestDepth === 0) {
-                        const lastLine = lines[i + currentLineIdx];
-                        if (armLines.length === 0 || armLines[armLines.length - 1] !== lastLine) {
-                            armLines.push(lastLine);
-                        }
-                        const bodyLines = armLines.slice(1);
-                        const innerCount = bodyLines.length - 1;
-                        const expectedIndent = armLineIndent + 4;
-                        if (innerCount >= 1) {
-                            let nestLevel = 0;
-                            for (let bi = 0; bi < innerCount; bi++) {
-                                const bl = bodyLines[bi];
-                                const bt = bl.trimStart();
-                                if (bt.length === 0) { continue; }
-                                const resultIdx = i + armBodyLineStart + bi;
-                                if (/\)[+*]/.test(bt)) {
-                                    nestLevel = Math.max(0, nestLevel - 1);
-                                }
-                                nestLevel = Math.max(0, nestLevel - closeBrace[resultIdx]);
-                                const newIndent = expectedIndent + nestLevel * 4;
-                                nestLevel += openBrace[resultIdx];
-                                if (bt.startsWith('$(')) {
-                                    nestLevel++;
-                                }
-                                if (resultIdx < result.length) {
-                                    const oldIndent = bl.length - bt.length;
-                                    if (newIndent !== oldIndent) {
-                                        result[resultIdx] = ' '.repeat(newIndent) + bt;
-                                    }
-                                }
-                            }
-                        }
-                        armNestDepth = 0;
-                        armLines = [];
-                        armBodyLineStart = -1;
-                    }
-                }
-                continue;
-            }
-            if (ch === '=' && pos + 1 < macroText.length && macroText[pos + 1] === '>') {
-                let scanPos = pos + 2;
-                while (scanPos < macroText.length && (macroText[scanPos] === ' ' || macroText[scanPos] === '\t' || macroText[scanPos] === '\n')) {
-                    if (macroText[scanPos] === '\n') { currentLineIdx++; }
-                    scanPos++;
-                }
-                if (scanPos < macroText.length && macroText[scanPos] === '{') {
-                    armNestDepth = 1;
-                    armLineStart = currentLineIdx;
-                    armLines = [lines[i + currentLineIdx]];
-                    armBodyLineStart = currentLineIdx + 1;
-                    const armLine = lines[i + currentLineIdx];
-                    armLineIndent = armLine.length - armLine.trimStart().length;
-                    pos = scanPos;
-                    continue;
-                }
-            }
-        }
-        i = end + 1;
-    }
-    return result.join('\n');
+    return text;
 }

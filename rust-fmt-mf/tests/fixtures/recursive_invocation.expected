@@ -1,11 +1,11 @@
 macro_rules! recursive_macro {
-    ($val:expr,0) => {
+    ($val:expr, 0) => {
         $val
     };
-    ($val:expr,1) => {
+    ($val:expr, 1) => {
         recursive_macro!($val * 2, 0)
     };
-    ($val:expr,2) => {
+    ($val:expr, 2) => {
         recursive_macro!($val * 2, 1)
     };
 }

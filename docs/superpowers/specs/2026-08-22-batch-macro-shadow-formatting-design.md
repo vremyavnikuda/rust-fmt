@@ -126,7 +126,7 @@ Add a process-wide `AtomicUsize` counter in `formatter.rs`, incremented once per
 - Does not touch `preformat_rep_bodies`, `format_macro_invocations`, or `run_rustfmt_no_macro` — those are explicitly out of scope (see Scope).
 - Does not change `MAX_FORMAT_PASSES` (8) or the convergence/fixed-point logic in `format_source_with_report`.
 - Does not change any public CLI flag, VS Code setting, or command.
-- `format_definition_once` (the current per-definition function) is kept unchanged and reused as-is inside the fallback branch — no duplicated formatting logic.
+- `format_definition_once`'s observable behavior is unchanged and it is reused as-is inside the fallback branch. Its body-extraction logic is factored into a shared helper (`build_arm_shadow_fragment`) used by both it and `format_definitions_batch`, so the two never duplicate the same extraction code.
 
 ## Completion Criteria
 

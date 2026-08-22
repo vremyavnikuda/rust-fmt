@@ -15,7 +15,7 @@
 - Output must be byte-identical to today's output for every existing fixture and corpus file — this is a performance change only, never a formatting-behavior change.
 - No new public CLI flags, VS Code settings, or commands.
 - `preformat_rep_bodies`, `format_macro_invocations`, and `run_rustfmt_no_macro` are out of scope — do not touch them.
-- `format_definition_once` (the existing per-definition function) must remain unchanged and be reused as-is in the fallback path — no duplicated formatting logic.
+- `format_definition_once`'s observable behavior (output for any given input) must stay byte-identical and it must be reused as-is in the fallback path. Its internal body-extraction logic must not be duplicated in the new batch function — both call one shared helper (`build_arm_shadow_fragment`, introduced in Task 4).
 
 ---
 
@@ -260,13 +260,147 @@ git commit -m "test(rust-fmt-mf): add failing perf regression test for batched m
 ### Task 4: Implement batched definition formatting in `format_source_once`
 
 **Files:**
-- Modify: `rust-fmt-mf/src/lib.rs:1057-1087` (the `format_source_once` function)
+- Modify: `rust-fmt-mf/src/lib.rs:1004-1087` (both `format_definition_once` and `format_source_once`)
 
 **Interfaces:**
-- Consumes: `accepted_batch_result` (Task 2), `crate::formatter::run_rustfmt` (existing), `build_shadow_file_from_strings` (existing, unchanged), `apply_formatting` (existing, unchanged), `format_definition_once` (existing, unchanged, reused in the fallback branch).
-- Produces: `fn format_definitions_batch(source: &str, definitions: &[&crate::types::MacroDef], rustfmt_path: &str, edition: &str, config_path: Option<&str>) -> anyhow::Result<String>` (crate-private, new).
+- Consumes: `accepted_batch_result` (Task 2), `crate::formatter::run_rustfmt` (existing), `build_shadow_file_from_strings` (existing, unchanged), `apply_formatting` (existing, unchanged).
+- Produces:
+  - `fn build_arm_shadow_fragment(source: &str, arm: &crate::types::MacroArm, marker_prefix: &str, rustfmt_path: &str, edition: &str, config_path: Option<&str>) -> (String, Mapping)` (crate-private, new) — the single place that extracts, normalizes, and pre-formats one arm's body. Both `format_definition_once` and the new `format_definitions_batch` call this instead of inlining the extraction logic, so there is exactly one copy of it.
+  - `fn format_definitions_batch(source: &str, definitions: &[&crate::types::MacroDef], rustfmt_path: &str, edition: &str, config_path: Option<&str>) -> anyhow::Result<String>` (crate-private, new).
+- `format_definition_once`'s signature and return value for any given input are unchanged — only its body is refactored to call the new shared helper instead of inlining the same code.
 
-- [ ] **Step 1: Add `format_definitions_batch`**
+- [ ] **Step 1: Add `build_arm_shadow_fragment` and refactor `format_definition_once` to use it**
+
+In `rust-fmt-mf/src/lib.rs`, add this function immediately above `fn format_definition_once(` (around line 1004):
+
+```rust
+/// Extract, normalize, and pre-format one macro arm's shadow-file body
+/// fragment. Shared by `format_definition_once` (single-definition path)
+/// and `format_definitions_batch` (multi-definition path) so the two never
+/// drift out of sync with each other.
+fn build_arm_shadow_fragment(
+    source: &str,
+    arm: &crate::types::MacroArm,
+    marker_prefix: &str,
+    rustfmt_path: &str,
+    edition: &str,
+    config_path: Option<&str>,
+) -> (String, Mapping) {
+    let arm_body_text = &source[arm.body_span.clone()];
+    let body_text = arm_body_text.trim();
+    let inner = if body_text.starts_with("{{") && body_text.ends_with("}}") {
+        &body_text[2..body_text.len() - 2]
+    } else {
+        &body_text[1..body_text.len() - 1]
+    };
+    let trimmed = inner.strip_prefix('\n').unwrap_or(inner);
+    let inner_text = trimmed.strip_suffix('\n').unwrap_or(trimmed);
+    let mut mapping = Mapping::with_prefix(marker_prefix.to_string());
+    let mut inner_str = normalize_body_indent(inner_text);
+    inner_str = replace_macro_syntax_text(&inner_str, &mut mapping);
+    inner_str = preformat_rep_bodies(
+        &inner_str,
+        &format!("{marker_prefix}rep_"),
+        rustfmt_path,
+        edition,
+        config_path,
+    );
+    (inner_str, mapping)
+}
+```
+
+Then replace the existing `format_definition_once` (`rust-fmt-mf/src/lib.rs:1004-1048`):
+
+```rust
+fn format_definition_once(
+    source: &str,
+    definition: &crate::types::MacroDef,
+    rustfmt_path: &str,
+    edition: &str,
+    config_path: Option<&str>,
+) -> anyhow::Result<String> {
+    if !supports_deep_format(source, definition) {
+        return Ok(format_definition_without_brace_bodies(source, definition));
+    }
+    let mut all_replaced_bodies_str: Vec<String> = Vec::new();
+    let mut all_mappings: Vec<Mapping> = Vec::new();
+    let marker_prefix = unique_prefix(source);
+    for arm in &definition.arms {
+        let arm_body_text = &source[arm.body_span.clone()];
+        let body_text = arm_body_text.trim();
+        let inner = if body_text.starts_with("{{") && body_text.ends_with("}}") {
+            &body_text[2..body_text.len() - 2]
+        } else {
+            &body_text[1..body_text.len() - 1]
+        };
+        let trimmed = inner.strip_prefix('\n').unwrap_or(inner);
+        let inner_text = trimmed.strip_suffix('\n').unwrap_or(trimmed);
+        let mut mapping = Mapping::with_prefix(marker_prefix.clone());
+        let mut inner_str = normalize_body_indent(inner_text);
+        inner_str = replace_macro_syntax_text(&inner_str, &mut mapping);
+        inner_str = preformat_rep_bodies(
+            &inner_str,
+            &format!("{marker_prefix}rep_"),
+            rustfmt_path,
+            edition,
+            config_path,
+        );
+        all_replaced_bodies_str.push(inner_str);
+        all_mappings.push(mapping);
+    }
+    let shadow_code = build_shadow_file_from_strings(&all_replaced_bodies_str, &marker_prefix);
+    let formatted_shadow = run_rustfmt(&shadow_code, rustfmt_path, edition, config_path)?;
+    Ok(apply_formatting(
+        source,
+        std::slice::from_ref(definition),
+        &formatted_shadow,
+        &all_mappings,
+    ))
+}
+```
+
+with:
+
+```rust
+fn format_definition_once(
+    source: &str,
+    definition: &crate::types::MacroDef,
+    rustfmt_path: &str,
+    edition: &str,
+    config_path: Option<&str>,
+) -> anyhow::Result<String> {
+    if !supports_deep_format(source, definition) {
+        return Ok(format_definition_without_brace_bodies(source, definition));
+    }
+    let mut all_replaced_bodies_str: Vec<String> = Vec::new();
+    let mut all_mappings: Vec<Mapping> = Vec::new();
+    let marker_prefix = unique_prefix(source);
+    for arm in &definition.arms {
+        let (inner_str, mapping) = build_arm_shadow_fragment(
+            source,
+            arm,
+            &marker_prefix,
+            rustfmt_path,
+            edition,
+            config_path,
+        );
+        all_replaced_bodies_str.push(inner_str);
+        all_mappings.push(mapping);
+    }
+    let shadow_code = build_shadow_file_from_strings(&all_replaced_bodies_str, &marker_prefix);
+    let formatted_shadow = run_rustfmt(&shadow_code, rustfmt_path, edition, config_path)?;
+    Ok(apply_formatting(
+        source,
+        std::slice::from_ref(definition),
+        &formatted_shadow,
+        &all_mappings,
+    ))
+}
+```
+
+This step must not change `format_definition_once`'s behavior at all — it is a pure extract-method refactor. Verify with: `cd rust-fmt-mf && cargo test --release` (all 91 existing tests must still pass, unchanged) before moving to Step 2.
+
+- [ ] **Step 2: Add `format_definitions_batch`**
 
 In `rust-fmt-mf/src/lib.rs`, add this function immediately above `fn format_source_once(` (around line 1057), right after `accepted_batch_result` from Task 2:
 
@@ -288,21 +422,10 @@ fn format_definitions_batch(
     let mut all_mappings: Vec<Mapping> = Vec::new();
     for definition in definitions {
         for arm in &definition.arms {
-            let arm_body_text = &source[arm.body_span.clone()];
-            let body_text = arm_body_text.trim();
-            let inner = if body_text.starts_with("{{") && body_text.ends_with("}}") {
-                &body_text[2..body_text.len() - 2]
-            } else {
-                &body_text[1..body_text.len() - 1]
-            };
-            let trimmed = inner.strip_prefix('\n').unwrap_or(inner);
-            let inner_text = trimmed.strip_suffix('\n').unwrap_or(trimmed);
-            let mut mapping = Mapping::with_prefix(marker_prefix.clone());
-            let mut inner_str = normalize_body_indent(inner_text);
-            inner_str = replace_macro_syntax_text(&inner_str, &mut mapping);
-            inner_str = preformat_rep_bodies(
-                &inner_str,
-                &format!("{marker_prefix}rep_"),
+            let (inner_str, mapping) = build_arm_shadow_fragment(
+                source,
+                arm,
+                &marker_prefix,
                 rustfmt_path,
                 edition,
                 config_path,
@@ -326,7 +449,7 @@ fn format_definitions_batch(
 }
 ```
 
-- [ ] **Step 2: Replace `format_source_once`'s body**
+- [ ] **Step 3: Replace `format_source_once`'s body**
 
 Replace the entire current `format_source_once` function (`rust-fmt-mf/src/lib.rs:1057-1087`):
 
@@ -444,22 +567,22 @@ fn format_source_once(
 }
 ```
 
-- [ ] **Step 3: Build and fix any compile errors**
+- [ ] **Step 4: Build and fix any compile errors**
 
 Run: `cd rust-fmt-mf && cargo build --release 2>&1 | tail -60`
 Expected: clean build. If the borrow checker rejects any part of the above (e.g. a lifetime issue between `deep_definitions` borrowing `refreshed_definitions` and the later `text = candidate` reassignment), the fix is almost always to shrink the borrow's scope — e.g. compute `just_defs` and drop `deep_definitions`'s borrow before mutating `text` in the `Some` arm. Do not change the two-phase design or the fallback behavior to work around a borrow error.
 
-- [ ] **Step 4: Run the Task 3 perf test and record the improvement**
+- [ ] **Step 5: Run the Task 3 perf test and record the improvement**
 
 Run: `cd rust-fmt-mf && cargo test --lib formatting_many_independent_macros_uses_few_rustfmt_calls -- --nocapture`
 Expected: PASS. If it still fails, read the printed call count — if it's just over 8 because convergence needs one more pass than assumed, that's fine: update the `8` in the Task 3 test to the actual observed value plus 2 (safety margin for one extra convergence pass), but the count must still be small and constant, not scaling with the 5 definitions in the fixture.
 
-- [ ] **Step 5: Run the full existing regression suite — must be unchanged**
+- [ ] **Step 6: Run the full existing regression suite — must be unchanged**
 
 Run: `cd rust-fmt-mf && cargo test --release`
 Expected: every test that passed before this task still passes, with byte-identical assertions unchanged (in particular `real_macro_heavy_matches_user_golden`, `real_macro_edge_cases_match_golden`, `real_macro_missing_cases_match_golden`, `real_main_fmt_matches_golden`, and both `marker_collision_is_idempotent`-style idempotence tests).
 
-- [ ] **Step 6: Run the python corpus audit — must stay at 100% conformance**
+- [ ] **Step 7: Run the python corpus audit — must stay at 100% conformance**
 
 Run: `cd rust-fmt-mf && python3 tests/run_fixtures.py`
 Expected:
@@ -470,7 +593,7 @@ Macros handled without skip: 200/200 (100.0%)
 ```
 If `Exact-output conformance` or `Macros handled without skip` drops even slightly, the batching changed real output — stop and investigate before proceeding; do not adjust golden fixtures to match new output for this task.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 cd rust-fmt-mf

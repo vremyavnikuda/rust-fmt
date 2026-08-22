@@ -792,6 +792,9 @@ fn apply_deep_definitions_batch_falls_back_when_batch_result_corrupts_tokens() {
 
 #[test]
 fn crlf_input_with_a_comment_formats_without_erroring() {
+    let _guard = COUNTER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let source = "//! doc comment\r\nmacro_rules! one {\r\n    ($x:expr) => { $x + 1 };\r\n}\r\n\r\npub fn use_one() {\r\n    one!(1);\r\n}\r\n";
     let result = super::format_source(source, "rustfmt", "2021", None);
     assert!(
@@ -803,6 +806,9 @@ fn crlf_input_with_a_comment_formats_without_erroring() {
 
 #[test]
 fn crlf_input_round_trips_and_preserves_line_ending_style() {
+    let _guard = COUNTER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let source = "//! doc comment\r\nmacro_rules! one {\r\n    ($x:expr) => { $x + 1 };\r\n}\r\n\r\npub fn use_one() {\r\n    one!(1);\r\n}\r\n";
     let result = super::format_source(source, "rustfmt", "2021", None).unwrap();
     assert!(
@@ -820,6 +826,9 @@ fn crlf_input_round_trips_and_preserves_line_ending_style() {
 
 #[test]
 fn crlf_report_spans_point_at_the_original_crlf_source() {
+    let _guard = COUNTER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let source = "//! doc comment\r\nmacro_rules! one {\r\n    ($x:expr) => { $x + 1 };\r\n}\r\n";
     let report = super::format_source_with_report(source, "rustfmt", "2021", None).unwrap();
     let outcome = &report.macros[0];
@@ -837,6 +846,9 @@ fn crlf_report_spans_point_at_the_original_crlf_source() {
 
 #[test]
 fn lf_only_input_is_completely_unaffected_by_crlf_handling() {
+    let _guard = COUNTER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let source = "//! doc comment\nmacro_rules! one {\n    ($x:expr) => { $x + 1 };\n}\n\npub fn use_one() {\n    one!(1);\n}\n";
     let result = super::format_source(source, "rustfmt", "2021", None).unwrap();
     assert!(!result.contains('\r'), "LF-only input must never gain a CR: {result:?}");

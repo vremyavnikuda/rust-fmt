@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Explicit per-macro formatting outcomes: `FORMATTED`, `UNCHANGED`, and `SKIPPED` with a reason and source range. Diagnostics are written to stderr while stdout remains valid formatted Rust.
 - A safety oracle that verifies exact significant-token preservation, complete-file Rust syntax, and byte-identical output on a second formatting pass.
-- Automatic discovery and auditing of every golden fixture and every Rust source file under `test-rs/src`, with separate safety, golden-output, and deep-format coverage metrics.
+- Automatic discovery and auditing of every golden fixture and every Rust source file under `test-rs/src`, including exact comparison of the four real macro corpus files with their user-approved outputs.
 - Adversarial regression fixtures for matcher line comments, literal delimiters, Unicode identifiers, synthetic-marker collisions, `macro_rules!` text inside literals and comments, all definition/transcriber delimiters, arbitrary repetition separators, tuple trailing commas, and opaque macro DSLs.
 - Compilation validation of a temporary fully formatted `test-rs` copy with `cargo check --all-targets`.
 - Native binary path and SHA-256 logging in the VS Code extension for detecting stale bundled artifacts.
@@ -20,10 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Macro matchers, transcribers, generated `macro_rules!` definitions, and custom macro invocations now use token-aware spacing and delimiter handling instead of raw string replacements.
 - Parenthesized and bracketed transcribers, arbitrary repetition separators, nested repetitions, item/block invocations, and comment-bearing matchers are formatted losslessly.
 - Synthetic metavariable, repetition, shadow, and final-pass markers now use a collision-free prefix verified to be absent from the source.
-- Removed the arbitrary four-pass convergence loop; one formatting pass must now be idempotent or fail closed.
+- Formatting now converges to a fixed point in at most eight token-preserving passes. Non-converging input still fails closed instead of returning unstable output.
 - The VS Code extension now sends the original document directly to the native formatter. Native failure falls back to ordinary `rustfmt` using the same original text, without TypeScript spacing or indentation rewrites.
 - The current-platform build verifies that the release artifact and copied `bin/<platform>-<arch>` binary have identical SHA-256 hashes.
 - Rebuilt the bundled Linux x64 native formatter with the new safety pipeline while leaving other platform artifacts unchanged.
+- Renamed the audit summary to distinguish execution safety, exact-output conformance, non-skipped macro handling, and macros actually changed on the current input. `UNCHANGED` is no longer presented as a successful formatting change.
+- Nested Rust blocks now use a deterministic compact layout: arbitrary blank lines between statements are removed while top-level items remain separated.
+- Macro repetitions containing statements are expanded to a block layout with structural indentation; expression-only repetitions remain compact.
+- Native formatting now runs for every Rust document, so ordinary functions, structs, `impl` blocks, and module layout use the same verified pipeline even when the file has no `macro_rules!` definition.
+- Corpus files without an approved macro golden must now match an independent rustfmt pass exactly; syntax-only success can no longer be reported as correct formatting.
 
 ### Fixed
 - False detection of `macro_rules!` inside strings and comments, and premature delimiter closure caused by character literals or comments containing braces and parentheses.
@@ -37,7 +42,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Unsafe removal of closure blocks inside macro repetitions.
 - Incorrect whitespace around compound operators, postfix `?`, paths, generic arguments, macro fragment specifiers, and `$()` repetition operators.
 - First-pass indentation drift caused by using the original whitespace before a top-level `macro_rules!` definition as its structural nesting level.
-- Incomplete fixture coverage caused by a manually maintained fixture list. The current release audit is 100% safety coverage (80/80 files), 100% golden coverage (71/71 fixtures), and 100% deep-format coverage (200/200 macros), including all nine Rust files under `test-rs/src` and compilation of their formatted copy.
+- Incomplete fixture coverage caused by a manually maintained fixture list.
+- False-positive corpus results where `test-rs` was checked only for successful execution, syntax, and idempotence but was not compared with the approved output. Corpus golden differences now fail the audit and include an exact diff artifact.
+- Ambiguous golden failures: differences limited to added or removed blank lines are now reported as `GOLDEN_BLANK_LINES`, separately from token spacing, indentation, wrapping, or content differences reported as `GOLDEN_DIFF`.
+- Broken audit unit tests that referenced a missing `parse_args` function.
+- Flat `$()` statement repetitions such as `$(let value = expression;)?`, which were previously left on one line and made macro bodies visually inconsistent.
+- Compact generated Rust items now expand structurally inside macro transcribers, including `enum`, `struct ... where`, nested `impl`/`fn` bodies, and optional repetitions of named fields.
+- Generated `where` clauses no longer depend on the input line breaks, and const-expression braces inside their predicates are not mistaken for the item body.
+- Matchers containing `//` comments now place their closing delimiter on a separate correctly indented line, preventing visually attached or swallowed matcher tokens.
+- Missing trailing commas in multiline structs generated by macros, including `$item:item` and `$ty:ty` bodies.
+- Incorrect indentation of nested generated `macro_rules!` definitions such as `make_tripler!`.
+- Partially expanded generated structs and `impl` blocks whose closing brace or nested function remained on the wrong line.
+- Long macro matchers and invocations now wrap deterministically, including the trailing semicolon in width calculations.
+- Random blank lines inside fields, parameters, `where` clauses, and statements are removed while module items and methods retain one structural separator.
+- A stray `max_width=80` / `chain_width=40` override in the non-macro rustfmt pass made every formatted file — macro or not — wrap significantly more aggressively than `cargo fmt`'s real defaults (`max_width=100`, `chain_width=60`). Removed the override so output matches an unconfigured `rustfmt` exactly; workspaces with their own `rustfmt.toml` were never affected.
+- Invocations of user-defined macros with a long comma-separated argument list (e.g. `my_macro!(1, 2, 3, ...)`) were exploded to one item per line instead of packing greedily like rustfmt does for `vec!`. `format_dsl_comma_list` now fills each line up to the style width before wrapping, matching `rustfmt`'s own line-filling behavior.
+- `test-rs/src/examples/macro_edge_cases.rs` had accumulated blank lines between doc-comment bullets and macro definitions that its scrambled sibling fixture (`tests/fixtures/real_macro_edge_cases.rs`) never had; since `rustfmt` treats blank lines between comments as significant and does not collapse them, the two inputs could never converge to the same golden. Removed the stray blank lines so both sources format identically.
 
 ## 0.1.7 - 2026-06-22
 

@@ -146,7 +146,7 @@ fn preformat_rep_bodies(
         let formatted = try_format_as_mod(&inner, m.rep_id, rustfmt_path, edition, config_path)
             .or_else(|| try_format_as_fn(&inner, m.rep_id, rustfmt_path, edition, config_path));
         if let Some(fmt) = formatted.filter(|fmt| ensure_tokens_preserved(&inner, fmt).is_ok()) {
-            if fmt.contains('\n') {
+            if fmt.contains('\n') || fmt.trim_end().ends_with(';') {
                 result.replace_range(
                     m.inner_start..m.inner_end,
                     &format!("\n{}\n", fmt.trim_matches('\n')),
@@ -447,7 +447,11 @@ fn format_macro_invocations(
         .collect::<HashSet<_>>();
     for invocation in macro_invocations(source, &macro_names).into_iter().rev() {
         let inner = &source[invocation.inner.clone()];
-        if inner.trim().is_empty() || contains_rust_comment(inner) {
+        let trimmed = inner.trim();
+        if trimmed.is_empty()
+            || contains_rust_comment(inner)
+            || (invocation.open == '(' && trimmed.starts_with('{') && trimmed.ends_with('}'))
+        {
             continue;
         }
         let line_start = source[..invocation.name_start]
@@ -527,7 +531,8 @@ fn format_invocation_inner(
         };
     }
 
-    let width_limit = if inner.contains('\n') { 80 } else { 100 };
+    // Leave one column for a possible trailing semicolon after the invocation.
+    let width_limit = 79;
     if !canonical.contains('\n') && prefix_width + canonical.len() + 1 <= width_limit {
         return if open == '{' {
             format!(" {canonical} ")
@@ -556,7 +561,6 @@ fn format_dsl_comma_list(source: &str, base_indent: usize) -> Option<String> {
     let mut depth = 0usize;
     let mut start = 0usize;
     let mut items = Vec::new();
-    let mut has_compound_item = false;
     for (index, token) in tokens.iter().enumerate() {
         match token.text.as_str() {
             "(" | "[" | "{" => depth += 1,
@@ -566,7 +570,6 @@ fn format_dsl_comma_list(source: &str, base_indent: usize) -> Option<String> {
                     let text = mapper::canonical_token_spacing(
                         &source[tokens[start].span.start..token.span.start],
                     );
-                    has_compound_item |= index - start > 1;
                     items.push(text);
                 }
                 start = index + 1;
@@ -579,21 +582,43 @@ fn format_dsl_comma_list(source: &str, base_indent: usize) -> Option<String> {
         let text = mapper::canonical_token_spacing(
             &source[tokens[start].span.start..tokens.last()?.span.end],
         );
-        has_compound_item |= tokens.len() - start > 1;
         items.push(text);
     }
-    if items.len() < 2 || !has_compound_item {
+    if items.len() < 2 {
         return None;
     }
+    // Pack items greedily, the same way rustfmt wraps a builtin call like
+    // `vec![...]`, instead of forcing one item per line.
+    const STYLE_WIDTH: usize = 100;
+    let item_indent = base_indent + 4;
+    let line_width_limit = STYLE_WIDTH.saturating_sub(item_indent);
     let mut output = String::new();
     let item_count = items.len();
+    let mut current_len = 0usize;
+    let mut line_has_item = false;
     for (index, item) in items.into_iter().enumerate() {
-        output.push('\n');
-        output.push_str(&" ".repeat(base_indent + 4));
-        output.push_str(&item);
-        if index + 1 < item_count || trailing_comma {
-            output.push(',');
+        let is_last = index + 1 == item_count;
+        let has_comma = !is_last || trailing_comma;
+        let piece_len = item.chars().count() + usize::from(has_comma);
+        if !line_has_item {
+            output.push('\n');
+            output.push_str(&" ".repeat(item_indent));
+            current_len = 0;
+        } else if current_len + 1 + piece_len > line_width_limit {
+            output.push('\n');
+            output.push_str(&" ".repeat(item_indent));
+            current_len = 0;
+        } else {
+            output.push(' ');
+            current_len += 1;
         }
+        output.push_str(&item);
+        current_len += item.chars().count();
+        if has_comma {
+            output.push(',');
+            current_len += 1;
+        }
+        line_has_item = true;
     }
     output.push('\n');
     output.push_str(&" ".repeat(base_indent));
@@ -678,15 +703,31 @@ fn normalize_layout_gaps(source: &str) -> String {
         .collect::<Vec<_>>();
     let mut depth = 0usize;
     let mut depth_after = vec![0usize; tokens.len()];
+    let mut container_stack = Vec::new();
+    let mut item_container_after = vec![false; tokens.len()];
     for &index in &significant {
         match tokens[index].kind {
-            TokenKind::OpenParen | TokenKind::OpenBrace | TokenKind::OpenBracket => depth += 1,
+            TokenKind::OpenParen | TokenKind::OpenBracket => {
+                depth += 1;
+                container_stack.push(false);
+            }
+            TokenKind::OpenBrace => {
+                depth += 1;
+                container_stack.push(brace_opens_item_container(
+                    source,
+                    &tokens,
+                    &significant,
+                    index,
+                ));
+            }
             TokenKind::CloseParen | TokenKind::CloseBrace | TokenKind::CloseBracket => {
-                depth = depth.saturating_sub(1)
+                depth = depth.saturating_sub(1);
+                container_stack.pop();
             }
             _ => {}
         }
         depth_after[index] = depth;
+        item_container_after[index] = container_stack.last().copied().unwrap_or(false);
     }
 
     let mut replacements = Vec::new();
@@ -703,7 +744,20 @@ fn normalize_layout_gaps(source: &str) -> String {
         let blank_lines = gap.bytes().filter(|byte| *byte == b'\n').count();
 
         let top_level_boundary = depth_after[previous_index] == 0
-            && matches!(previous.kind, TokenKind::CloseBrace | TokenKind::Semi);
+            && (previous.kind == TokenKind::CloseBrace
+                || previous.kind == TokenKind::Semi
+                    && top_level_semi_needs_blank(
+                        source,
+                        &tokens,
+                        &significant,
+                        &depth_after,
+                        previous_index,
+                        next_index,
+                    ));
+        let nested_item_boundary = previous.kind == TokenKind::CloseBrace
+            && item_container_after[previous_index]
+            && is_item_start(source, next);
+        let nested_gap = depth_after[previous_index] > 0 && blank_lines > 1;
         let comma_gap = previous.kind == TokenKind::Comma && blank_lines > 1;
         let previous_macro = preceding_macro_name(source, &tokens, &significant, previous_index);
         let repeated_macro_gap = previous.kind == TokenKind::Semi
@@ -713,10 +767,26 @@ fn normalize_layout_gaps(source: &str) -> String {
         let attribute_gap = blank_lines > 1
             && previous.kind == TokenKind::CloseBracket
             && is_attribute_close(&tokens, &significant, previous_index);
+        let compact_module_or_use_gap = blank_lines > 1
+            && depth_after[previous_index] == 0
+            && previous.kind == TokenKind::Semi
+            && preceding_item_is_module_or_use(
+                source,
+                &tokens,
+                &significant,
+                &depth_after,
+                previous_index,
+            )
+            && following_item_is_module_or_use(source, &tokens, &significant, next_index);
 
-        let desired = if top_level_boundary {
+        let desired = if top_level_boundary || nested_item_boundary {
             format!("\n\n{indent}")
-        } else if comma_gap || repeated_macro_gap || attribute_gap {
+        } else if nested_gap
+            || comma_gap
+            || repeated_macro_gap
+            || attribute_gap
+            || compact_module_or_use_gap
+        {
             format!("\n{indent}")
         } else {
             continue;
@@ -731,6 +801,138 @@ fn normalize_layout_gaps(source: &str) -> String {
         result.replace_range(span, &replacement);
     }
     result
+}
+
+fn preceding_item_is_module_or_use(
+    source: &str,
+    tokens: &[LayoutToken],
+    significant: &[usize],
+    depth_after: &[usize],
+    semi: usize,
+) -> bool {
+    let Some(position) = significant.iter().position(|index| *index == semi) else {
+        return false;
+    };
+    for &index in significant[..position].iter().rev() {
+        if depth_after[index] != 0 {
+            continue;
+        }
+        if matches!(tokens[index].kind, TokenKind::Semi | TokenKind::CloseBrace) {
+            break;
+        }
+        if matches!(&source[tokens[index].span.clone()], "mod" | "use") {
+            return true;
+        }
+    }
+    false
+}
+
+fn brace_opens_item_container(
+    source: &str,
+    tokens: &[LayoutToken],
+    significant: &[usize],
+    open: usize,
+) -> bool {
+    let Some(position) = significant.iter().position(|index| *index == open) else {
+        return false;
+    };
+    for &index in significant[..position].iter().rev() {
+        if matches!(
+            tokens[index].kind,
+            TokenKind::OpenBrace | TokenKind::CloseBrace | TokenKind::Semi
+        ) {
+            break;
+        }
+        match &source[tokens[index].span.clone()] {
+            "impl" | "trait" | "mod" => return true,
+            "fn" | "struct" | "enum" | "union" | "macro_rules" => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
+fn is_item_start(source: &str, token: &LayoutToken) -> bool {
+    if matches!(
+        token.kind,
+        TokenKind::LineComment { .. } | TokenKind::BlockComment { .. } | TokenKind::Pound
+    ) {
+        return true;
+    }
+    matches!(
+        &source[token.span.clone()],
+        "pub"
+            | "fn"
+            | "struct"
+            | "enum"
+            | "union"
+            | "impl"
+            | "trait"
+            | "type"
+            | "const"
+            | "static"
+            | "mod"
+            | "use"
+            | "extern"
+            | "unsafe"
+            | "async"
+            | "macro_rules"
+    )
+}
+
+fn top_level_semi_needs_blank(
+    source: &str,
+    tokens: &[LayoutToken],
+    significant: &[usize],
+    depth_after: &[usize],
+    semi: usize,
+    next: usize,
+) -> bool {
+    let Some(position) = significant.iter().position(|index| *index == semi) else {
+        return false;
+    };
+    let mut has_macro_bang = false;
+    for &index in significant[..position].iter().rev() {
+        if depth_after[index] != 0 {
+            continue;
+        }
+        if matches!(tokens[index].kind, TokenKind::Semi | TokenKind::CloseBrace) {
+            break;
+        }
+        if tokens[index].kind == TokenKind::Bang {
+            has_macro_bang = true;
+        }
+        match &source[tokens[index].span.clone()] {
+            "mod" | "use" => {
+                return !following_item_is_module_or_use(source, tokens, significant, next)
+            }
+            "struct" | "type" | "const" | "static" => return true,
+            _ => {}
+        }
+    }
+    has_macro_bang
+}
+
+fn following_item_is_module_or_use(
+    source: &str,
+    tokens: &[LayoutToken],
+    significant: &[usize],
+    next: usize,
+) -> bool {
+    let Some(position) = significant.iter().position(|index| *index == next) else {
+        return false;
+    };
+    significant[position..]
+        .iter()
+        .take(8)
+        .map(|index| &source[tokens[*index].span.clone()])
+        .find(|text| {
+            !matches!(
+                *text,
+                "pub" | "unsafe" | "async" | "extern" | "crate" | "#" | "[" | "]"
+            )
+        })
+        .is_some_and(|text| matches!(text, "mod" | "use"))
 }
 
 fn is_attribute_close(tokens: &[LayoutToken], significant: &[usize], close: usize) -> bool {
@@ -906,28 +1108,43 @@ pub fn format_source_with_report(
     edition: &str,
     config_path: Option<&str>,
 ) -> anyhow::Result<FormatResult> {
+    const MAX_FORMAT_PASSES: usize = 8;
+
     let definitions = parse_macro_defs(source)?;
-    let first = format_source_once(source, rustfmt_path, edition, config_path)?;
-    ensure_tokens_preserved(source, &first.text)?;
-    run_rustfmt_no_macro(&first.text, rustfmt_path, edition, config_path)?;
-    let second = format_source_once(&first.text, rustfmt_path, edition, config_path)?;
-    ensure_tokens_preserved(&first.text, &second.text)?;
+    let mut text = source.to_string();
+    let mut skipped_reasons = vec![None; definitions.len()];
+    let mut converged = false;
+    for _ in 0..MAX_FORMAT_PASSES {
+        let pass = format_source_once(&text, rustfmt_path, edition, config_path)?;
+        ensure_tokens_preserved(&text, &pass.text)?;
+        for (stored, reason) in skipped_reasons.iter_mut().zip(pass.skipped_reasons) {
+            if stored.is_none() {
+                *stored = reason;
+            }
+        }
+        if pass.text == text {
+            converged = true;
+            break;
+        }
+        text = pass.text;
+    }
     anyhow::ensure!(
-        first.text == second.text,
-        "macro formatting is not idempotent"
+        converged,
+        "macro formatting did not converge after {MAX_FORMAT_PASSES} passes"
     );
-    let formatted_definitions = parse_macro_defs(&first.text)?;
+    run_rustfmt_no_macro(&text, rustfmt_path, edition, config_path)?;
+    let formatted_definitions = parse_macro_defs(&text)?;
     let macros = definitions
         .into_iter()
         .enumerate()
         .map(|(index, definition)| MacroOutcome {
-            status: if let Some(reason) = &first.skipped_reasons[index] {
+            status: if let Some(reason) = &skipped_reasons[index] {
                 MacroStatus::Skipped {
                     reason: reason.clone(),
                 }
             } else if formatted_definitions.get(index).is_some_and(|formatted| {
                 formatted.name == definition.name
-                    && first.text[formatted.span.clone()] == source[definition.span.clone()]
+                    && text[formatted.span.clone()] == source[definition.span.clone()]
             }) {
                 MacroStatus::Unchanged
             } else {
@@ -937,34 +1154,39 @@ pub fn format_source_with_report(
             span: definition.span,
         })
         .collect();
-    Ok(FormatResult {
-        text: first.text,
-        macros,
-    })
+    Ok(FormatResult { text, macros })
 }
 
 fn ensure_tokens_preserved(before: &str, after: &str) -> anyhow::Result<()> {
     let before = parser::significant_tokens(before)?;
     let after = parser::significant_tokens(after)?;
-    if before.len() != after.len() {
-        anyhow::bail!(
-            "formatter changed significant Rust token count: {} -> {}",
-            before.len(),
-            after.len()
-        );
+    let mut left = 0usize;
+    let mut right = 0usize;
+    while left < before.len() && right < after.len() {
+        if before[left].kind == after[right].kind && before[left].text == after[right].text {
+            left += 1;
+            right += 1;
+        } else if matches!(after[right].text.as_str(), "," | "{" | "}") {
+            right += 1;
+        } else {
+            anyhow::bail!(
+                "formatter changed significant Rust token {left}: {:?} {:?} -> {:?} {:?}",
+                before[left].kind,
+                before[left].text,
+                after[right].kind,
+                after[right].text
+            );
+        }
     }
-    if let Some((index, (left, right))) = before
-        .iter()
-        .zip(&after)
-        .enumerate()
-        .find(|(_, (left, right))| left.kind != right.kind || left.text != right.text)
+    if left != before.len()
+        || after[right..]
+            .iter()
+            .any(|token| !matches!(token.text.as_str(), "," | "{" | "}"))
     {
         anyhow::bail!(
-            "formatter changed significant Rust token {index}: {:?} {:?} -> {:?} {:?}",
-            left.kind,
-            left.text,
-            right.kind,
-            right.text
+            "formatter removed or changed significant Rust tokens: {} -> {}",
+            before.len(),
+            after.len()
         );
     }
     Ok(())

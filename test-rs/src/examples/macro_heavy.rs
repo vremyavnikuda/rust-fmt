@@ -98,7 +98,10 @@ pub fn use_complex_pattern() {
 }
 
 macro_rules! huge_macro {
-    ($(#[$attr:meta])* $vis:vis fn $name:ident($($arg:ident: $ty:ty),* $(,)?) -> $ret:ty $body:block) => {
+    (
+        $(#[$attr:meta])* $vis:vis fn $name:ident($($arg:ident: $ty:ty),* $(,)?) -> $ret:ty
+        $body:block
+    ) => {
         $(#[$attr])*
         $vis fn $name($($arg: $ty),*) -> $ret $body
     };
@@ -159,7 +162,9 @@ pub struct DataFields {
     pub active: bool,
 }
 
-field_accessor!(DataFields, name: String, age: u32, email: String, active: bool);
+field_accessor!(
+    DataFields, name: String, age: u32, email: String, active: bool
+);
 
 pub fn use_accessors(data: &DataFields) {
     println!(

@@ -93,13 +93,15 @@ macro_rules! complex_pattern {
 
 pub fn use_complex_pattern() {
     complex_pattern!(@inner x: 42);
-
     println!("x = {}", x);
     let _result = (10 + 1 + 2 + 3) * 2 * 3;
 }
 
 macro_rules! huge_macro {
-    ($(#[$attr:meta])* $vis:vis fn $name:ident($($arg:ident: $ty:ty),* $(,)?) -> $ret:ty $body:block) => {
+    (
+        $(#[$attr:meta])* $vis:vis fn $name:ident($($arg:ident: $ty:ty),* $(,)?) -> $ret:ty
+        $body:block
+    ) => {
         $(#[$attr])*
         $vis fn $name($($arg: $ty),*) -> $ret $body
     };
@@ -160,7 +162,9 @@ pub struct DataFields {
     pub active: bool,
 }
 
-field_accessor!(DataFields, name: String, age: u32, email: String, active: bool);
+field_accessor!(
+    DataFields, name: String, age: u32, email: String, active: bool
+);
 
 pub fn use_accessors(data: &DataFields) {
     println!(
@@ -262,7 +266,6 @@ pub fn builtin_macro_mess() {
         1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
     ];
     println!("{:?}", v);
-
     println!("formatted: {}", "hello");
     println!("multi\n line\n string");
 }
@@ -272,7 +275,6 @@ pub fn assert_macro_mess() {
     let y = 42;
     assert_eq!(x, y);
     assert_ne!(x, 0);
-
     assert!(x > 0 && x < 100);
 }
 
@@ -292,7 +294,6 @@ pub fn concat_mess() {
 
 pub fn include_str_mock() {
     let _s = "included content";
-
     println!("{}", _s);
 }
 

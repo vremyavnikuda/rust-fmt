@@ -405,5 +405,24 @@ suite('RustFormatter', () => {
             const result = await formatWithNativeMacroFormatter('fn main() {}', config, context, source.token);
             assert.strictEqual(result, null);
         });
+
+        test('RustFormatter uses native formatting for ordinary Rust files', async () => {
+            const nativePath = path.join(workspaceRoot, 'native-formatter');
+            fs.writeFileSync(nativePath, '#!/bin/sh\nsed "s/fn main/fn native_main/"\n');
+            fs.chmodSync(nativePath, 0o755);
+            const nativeFormatter = new RustFormatter({
+                rustfmtPath: 'rustfmt',
+                extraArgs: [],
+                nativeMacroFormatter: true,
+                nativeMacroFormatterPath: nativePath
+            });
+
+            const result = await nativeFormatter.formatWithContext(
+                'fn main() {}\n',
+                { cwd: workspaceRoot }
+            );
+
+            assert.strictEqual(result, 'fn native_main() {}\n');
+        });
     });
 });

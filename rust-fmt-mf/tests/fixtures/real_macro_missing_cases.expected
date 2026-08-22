@@ -17,7 +17,7 @@ macro_rules! pass_item {
 pass_item! {
     #[derive(Debug)]
     pub struct GeneratedByItem {
-        pub value: i32
+        pub value: i32,
     }
 }
 
@@ -30,7 +30,7 @@ macro_rules! collect_statements {
 macro_rules! borrowed_type {
     ($name:ident, $lt:lifetime, $ty:ty) => {
         pub struct $name<$lt> {
-            pub value: &$lt $ty
+            pub value: &$lt $ty,
         }
     };
 }
@@ -147,15 +147,11 @@ pub fn exercise_missing_cases() {
     let _ = matches_or_pattern!(Some(1), Some(_) | None);
     let _ = legacy_expression!(1 + 2);
     let _ = named_values!(one => 1; two => 2; three => 3;);
-    let _ = run_block!(
-        {
-            let value = 40;
-            value + 2
-        }
-    );
-
+    let _ = run_block!({
+        let value = 40;
+        value + 2
+    });
     let typed: GeneratedResult = Ok(42);
-
     let _ = typed;
     let candidate = Some(5);
     match candidate {
@@ -166,7 +162,6 @@ pub fn exercise_missing_cases() {
     }
     let _ = triple_generated!(14);
     let raw = RawIdentifier { r#type: 42 };
-
     let _ = raw.r#type;
     let _ = via_crate!();
     let _ = commented_matcher!(20, 22);

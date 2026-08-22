@@ -1,19 +1,23 @@
 //! Edge cases for macro formatting that are NOT covered by macro_heavy.rs
+
 //!
 //! Unique patterns tested here:
 //! - $crate hygienic paths
 //! - Escaped dollar sign $$
 //! - TT dispatch with @marker internal arms
+
 //! - Recursive with $()* repetition
 //! - $pat and $literal fragment specifiers
 //! - Multi-delimiter definition
 //! - unsafe and async body blocks
 //! - Macro calling another macro
+
 //! - impl Trait generated inside macro body
 //! - const generic parameter in macro pattern
 //! - Vec of trailing comma styles $(,)? combined
 //! - Complex nested repetition with mix of * + ?
 //! - $crate resolved path in invocation
+
 // $crate hygienic path demonstration
 macro_rules! format_greeting {
     ($name:expr) => {
@@ -133,13 +137,18 @@ macro_rules! repeat_const {
 // Macro generating tuple structs from repetition
 macro_rules! make_tuple_structs {
     ($($name:ident($ty:ty)),+ $(,)?) => {
-        $(pub struct $name(pub $ty);)+
+        $(
+            pub struct $name(pub $ty);
+        )+
     };
 }
 
 // Macro building a struct with where clause
 macro_rules! struct_with_bounds {
-    (#[$meta:meta] $vis:vis struct $name:ident<$($param:ident),+> where $($bound:ident: $trait:path),+ $(,)? { $($field:ident: $ty:ty),+ $(,)? }) => {
+    (
+        #[$meta:meta] $vis:vis struct $name:ident<$($param:ident),+> where
+        $($bound:ident: $trait:path),+ $(,)? { $($field:ident: $ty:ty),+ $(,)? }
+    ) => {
         #[$meta]
         $vis struct $name<$($param),+>
         where
@@ -159,6 +168,7 @@ macro_rules! cfg_never_active {
 }
 
 // Macro using concat! inside body
+
 macro_rules! concat_ids {
     ($prefix:ident, $suffix:ident) => {
         concat!(stringify!($prefix), "_", stringify!($suffix))
@@ -210,8 +220,13 @@ macro_rules! http_router {
 }
 
 // [4/4] Super complex: attributes, where, double-brace, nested $()
+
 macro_rules! derive_builder_with_state {
-    ($(#[$outer:meta])* $vis:vis struct $name:ident<$($param:ident $(: $bound:path)?),+ $(,)?> where $($where_clause:ident: $where_bound:path),+ $(,)? $({ $($field:ident: $fty:ty),+ $(,)? })?) => {
+    (
+        $(#[$outer:meta])* $vis:vis struct $name:ident<$($param:ident $(: $bound:path)?),+
+        $(,)?> where $($where_clause:ident: $where_bound:path),+ $(,)?
+        $({ $($field:ident: $fty:ty),+ $(,)? })?
+    ) => {
         $(#[$outer])*
         $vis struct $name<$($param),+>
         where
@@ -307,10 +322,7 @@ pub fn use_tuple_structs() {
 pub fn test_new_macros() {
     let _prompt = build_prompt!("user");
     let routes = http_router!(
-        get "/users",
-        post "/users",
-        put "/users/{id}",
-        delete "/users/{id}",
+        get "/users", post "/users", put "/users/{id}", delete "/users/{id}",
     );
     println!("{:?}", routes);
 }

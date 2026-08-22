@@ -27,6 +27,7 @@ fn real_main_fmt_is_idempotent() {
     let second = super::format_source_once(&first.text, "rustfmt", "2021", None).unwrap();
     assert_eq!(first.text, second.text);
 }
+
 use proc_macro2::TokenStream;
 
 #[test]

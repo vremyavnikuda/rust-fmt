@@ -1,5 +1,7 @@
 macro_rules! make_idents {
     ($prefix:ident, $($suffix:ident),*) => {
-        $(let $suffix = concat_idents!($prefix, _, $suffix);)*
+        $(
+            let $suffix = concat_idents!($prefix, _, $suffix);
+        )*
     };
 }

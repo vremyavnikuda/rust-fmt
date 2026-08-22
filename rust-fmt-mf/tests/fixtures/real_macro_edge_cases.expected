@@ -137,13 +137,18 @@ macro_rules! repeat_const {
 // Macro generating tuple structs from repetition
 macro_rules! make_tuple_structs {
     ($($name:ident($ty:ty)),+ $(,)?) => {
-        $(pub struct $name(pub $ty);)+
+        $(
+            pub struct $name(pub $ty);
+        )+
     };
 }
 
 // Macro building a struct with where clause
 macro_rules! struct_with_bounds {
-    (#[$meta:meta] $vis:vis struct $name:ident<$($param:ident),+> where $($bound:ident: $trait:path),+ $(,)? { $($field:ident: $ty:ty),+ $(,)? }) => {
+    (
+        #[$meta:meta] $vis:vis struct $name:ident<$($param:ident),+> where
+        $($bound:ident: $trait:path),+ $(,)? { $($field:ident: $ty:ty),+ $(,)? }
+    ) => {
         #[$meta]
         $vis struct $name<$($param),+>
         where
@@ -217,7 +222,11 @@ macro_rules! http_router {
 // [4/4] Super complex: attributes, where, double-brace, nested $()
 
 macro_rules! derive_builder_with_state {
-    ($(#[$outer:meta])* $vis:vis struct $name:ident<$($param:ident $(: $bound:path)?),+ $(,)?> where $($where_clause:ident: $where_bound:path),+ $(,)? $({ $($field:ident: $fty:ty),+ $(,)? })?) => {
+    (
+        $(#[$outer:meta])* $vis:vis struct $name:ident<$($param:ident $(: $bound:path)?),+
+        $(,)?> where $($where_clause:ident: $where_bound:path),+ $(,)?
+        $({ $($field:ident: $fty:ty),+ $(,)? })?
+    ) => {
         $(#[$outer])*
         $vis struct $name<$($param),+>
         where
@@ -245,31 +254,24 @@ pub fn test_edge_invocations() {
     // format_greeting (simulates $crate pattern)
     let greeting = format_greeting!("world");
     println!("{}", greeting);
-
     // Escaped dollar
     let env_name = env_var!("PATH").unwrap_or_default();
-
     println!("env: {}", env_name);
     // TT dispatch
     let doubled = tt_dispatch_compute!(double 21);
     let squared = tt_dispatch_compute!(square 9);
     let negated = tt_dispatch_compute!(negate 42);
-
     println!("{} {} {}", doubled, squared, negated);
     // Recursive sum
-
     let total = sum_repeat!(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
     println!("total: {}", total);
-
     // Pattern matching
     let res: Result<i32, &str> = Ok(42);
     let checked = check_pattern!(res, Ok(val) => val, 0);
     println!("checked: {}", checked);
-
     // Literal array
     let arr = array_of_literals!(7; 5);
     println!("{:?}", arr);
-
     // Multi delimiter
     let a = multi_delim_style!(1, 2, 3);
     let b = multi_delim_style![4, 5, 6];
@@ -283,11 +285,9 @@ pub fn test_edge_invocations() {
     let incremented = add_two!(5);
     println!("incremented: {}", incremented);
     // Const generic repeat
-
     let repeated = repeat_const!(99; 3);
     println!("{:?}", repeated);
     // Concat ids
-
     let _id = concat_ids!(hello, world);
 }
 
@@ -322,12 +322,8 @@ pub fn use_tuple_structs() {
 pub fn test_new_macros() {
     let _prompt = build_prompt!("user");
     let routes = http_router!(
-        get "/users",
-        post "/users",
-        put "/users/{id}",
-        delete "/users/{id}",
+        get "/users", post "/users", put "/users/{id}", delete "/users/{id}",
     );
-
     println!("{:?}", routes);
 }
 

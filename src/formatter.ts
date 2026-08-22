@@ -107,7 +107,7 @@ export class RustFormatter {
         if (token?.isCancellationRequested) {
             return null;
         }
-        if (this.config.nativeMacroFormatter && text.includes('macro_rules!')) {
+        if (this.config.nativeMacroFormatter) {
             console.log('[rust-fmt] Using native macro formatter');
             const nativeResult = await formatWithNativeMacroFormatter(text, this.config, context, token);
             if (nativeResult !== null) {

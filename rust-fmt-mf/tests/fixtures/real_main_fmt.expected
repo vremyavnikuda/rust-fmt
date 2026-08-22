@@ -3,7 +3,9 @@ mod examples;
 macro_rules! with_optional {
     ($val:expr $(, $extra:expr)? $(,)?) => {
         let result = $val;
-        $(let _ = $extra;)?
+        $(
+            let _ = $extra;
+        )?
         result
     };
 }
@@ -43,7 +45,6 @@ generated_impl!(Demo);
 
 fn main() {
     let x = 1 + 2 * 3;
-
     println!("Hello, world!");
     if x > 5 {
         println!("x is big");
@@ -57,7 +58,6 @@ fn main() {
     let result = add(x, 10);
     println!("Result: {}", result);
     examples::big_mess::terribly_formatted_function(1, 2, 3, 4, 5, 6);
-
     examples::complex_types::generic_function(42, "hello");
     examples::macro_heavy::use_bad_macros();
     let _x = with_optional!(42);
@@ -66,7 +66,6 @@ fn main() {
     let _b = brace_pattern! { 10, 20 };
     let _c = bracket_pattern![7];
     let _demo = Demo;
-
     println!("{}", _demo.value());
 }
 

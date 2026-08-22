@@ -146,7 +146,326 @@ fn real_macro_missing_cases_match_golden() {
     let expected = include_str!("fixtures/real_macro_missing_cases.expected");
     let actual = rust_fmt_mf::format_source(input, "rustfmt", "2021", None).unwrap();
 
-    assert_tokens_preserved(input, &actual);
+    assert_only_commas_added(input, &actual);
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn parenthesized_block_invocation_keeps_block_on_opening_line() {
+    let source = r#"macro_rules! run_block {
+    ($body:block) => {{
+        (move || $body)()
+    }};
+}
+
+fn main() {
+    let _ = run_block!(
+        {
+            let value = 40;
+            value + 2
+        }
+    );
+}
+"#;
+    let expected = r#"macro_rules! run_block {
+    ($body:block) => {{
+        (move || $body)()
+    }};
+}
+
+fn main() {
+    let _ = run_block!({
+        let value = 40;
+        value + 2
+    });
+}
+"#;
+
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+
+    assert_tokens_preserved(source, &actual);
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn nested_blocks_do_not_preserve_arbitrary_blank_lines() {
+    let source = r#"macro_rules! value {
+    () => {
+        let value = 42;
+
+        value
+    };
+}
+
+fn main() {
+    let value = value!();
+
+    println!("{}", value);
+}
+"#;
+    let expected = r#"macro_rules! value {
+    () => {
+        let value = 42;
+        value
+    };
+}
+
+fn main() {
+    let value = value!();
+    println!("{}", value);
+}
+"#;
+
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+
+    assert_tokens_preserved(source, &actual);
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn statement_repetitions_use_block_indentation() {
+    let source = r#"macro_rules! optional_statement {
+    ($($value:expr)?) => {
+        $(let _ = $value;)?
+    };
+}
+"#;
+    let expected = r#"macro_rules! optional_statement {
+    ($($value:expr)?) => {
+        $(
+            let _ = $value;
+        )?
+    };
+}
+"#;
+
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+
+    assert_tokens_preserved(source, &actual);
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn line_comment_expands_a_compact_matcher() {
+    let source = r#"macro_rules! commented {
+    ($left:expr, // keep this matcher comment
+    $right:expr) => {
+        $left + $right
+    };
+}
+"#;
+    let expected = r#"macro_rules! commented {
+    (
+        $left:expr, // keep this matcher comment
+        $right:expr
+    ) => {
+        $left + $right
+    };
+}
+"#;
+
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+
+    assert_tokens_preserved(source, &actual);
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn generated_enum_body_expands_from_one_line() {
+    let source = r#"macro_rules! define_enum {
+    ($name:ident { $($variant:ident),+ }) => {
+        pub enum $name { $($variant,)+ }
+    };
+}
+"#;
+    let expected = r#"macro_rules! define_enum {
+    ($name:ident { $($variant:ident),+ }) => {
+        pub enum $name {
+            $($variant,)+
+        }
+    };
+}
+"#;
+
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+
+    assert_tokens_preserved(source, &actual);
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn generated_struct_where_clause_is_whitespace_independent() {
+    let source = r#"macro_rules! bounded {
+    ($vis:vis $name:ident $param:ident $bound:path $field:ident $ty:ty) => {
+        $vis struct $name<$param> where $param: $bound { $(pub $field: $ty),+ }
+    };
+}
+"#;
+    let expected = r#"macro_rules! bounded {
+    ($vis:vis $name:ident $param:ident $bound:path $field:ident $ty:ty) => {
+        $vis struct $name<$param>
+        where
+            $param: $bound
+        {
+            $(pub $field: $ty),+
+        }
+    };
+}
+"#;
+
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+
+    assert_tokens_preserved(source, &actual);
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn partially_expanded_generated_struct_close_brace_is_repaired() {
+    let source = r#"macro_rules! bounded {
+    ($vis:vis $name:ident $param:ident $bound:path $field:ident $ty:ty) => {
+        $vis struct $name<$param>
+        where
+            $param: $bound
+        {
+            $(pub $field: $ty),+ }
+    };
+}
+"#;
+    let expected = r#"macro_rules! bounded {
+    ($vis:vis $name:ident $param:ident $bound:path $field:ident $ty:ty) => {
+        $vis struct $name<$param>
+        where
+            $param: $bound
+        {
+            $(pub $field: $ty),+
+        }
+    };
+}
+"#;
+
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+
+    assert_eq!(actual, expected);
+    assert_tokens_preserved(source, &actual);
+}
+
+#[test]
+fn generated_impl_expands_inline_method_body() {
+    let source = r#"macro_rules! implement {
+    ($ty:ty, $($trait:ty => $method:ident($($arg:ident: $arg_ty:ty),*) -> $ret:ty),+) => {
+        $(
+            impl $trait for $ty {
+                fn $method($($arg: $arg_ty),*) -> $ret { unimplemented!() }
+            }
+        )+
+    };
+}
+"#;
+    let expected = r#"macro_rules! implement {
+    ($ty:ty, $($trait:ty => $method:ident($($arg:ident: $arg_ty:ty),*) -> $ret:ty),+) => {
+        $(
+            impl $trait for $ty {
+                fn $method($($arg: $arg_ty),*) -> $ret {
+                    unimplemented!()
+                }
+            }
+        )+
+    };
+}
+"#;
+
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+
+    assert_tokens_preserved(source, &actual);
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn partially_expanded_generated_impl_is_repaired() {
+    let source = r#"macro_rules! implement {
+    ($ty:ty, $($trait:ty => $method:ident($($arg:ident: $arg_ty:ty),*) -> $ret:ty),+) => {
+        $(
+            impl $trait for $ty { fn $method($($arg: $arg_ty),*) -> $ret {
+                unimplemented!()
+            }
+        }
+        )+
+    };
+}
+"#;
+    let expected = r#"macro_rules! implement {
+    ($ty:ty, $($trait:ty => $method:ident($($arg:ident: $arg_ty:ty),*) -> $ret:ty),+) => {
+        $(
+            impl $trait for $ty {
+                fn $method($($arg: $arg_ty),*) -> $ret {
+                    unimplemented!()
+                }
+            }
+        )+
+    };
+}
+"#;
+
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+
+    assert_eq!(actual, expected);
+    assert_tokens_preserved(source, &actual);
+}
+
+#[test]
+fn optional_generated_fields_use_nested_indentation() {
+    let source = r#"macro_rules! optional_fields {
+    ($vis:vis $name:ident $param:ident $bound:path $($field:ident: $ty:ty),+) => {
+        $vis struct $name<$param> where
+        $param: $bound { $(
+        $(pub $field: $ty,)+
+        )? }
+    };
+}
+"#;
+    let expected = r#"macro_rules! optional_fields {
+    ($vis:vis $name:ident $param:ident $bound:path $($field:ident: $ty:ty),+) => {
+        $vis struct $name<$param>
+        where
+            $param: $bound
+        {
+            $(
+                $(pub $field: $ty,)+
+            )?
+        }
+    };
+}
+"#;
+
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+
+    assert_tokens_preserved(source, &actual);
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn generated_where_clause_ignores_const_expression_braces() {
+    let source = r#"macro_rules! const_bounded {
+    ($vis:vis $name:ident $n:ident $field:ident) => {
+        $vis struct $name<const $n: usize> where [(); { $n }]: Sized { pub $field: [u8; $n], }
+    };
+}
+"#;
+    let expected = r#"macro_rules! const_bounded {
+    ($vis:vis $name:ident $n:ident $field:ident) => {
+        $vis struct $name<const $n: usize>
+        where
+            [(); { $n }]: Sized
+        {
+            pub $field: [u8; $n],
+        }
+    };
+}
+"#;
+
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+
+    assert_tokens_preserved(source, &actual);
     assert_eq!(actual, expected);
 }
 
@@ -347,4 +666,320 @@ fn rustfmt_cannot_remove_blocks_inside_repetitions() {
         rust_fmt_mf::types::MacroStatus::Skipped { .. }
     ));
     assert!(report.text.contains("move || { $body }"));
+}
+
+#[test]
+fn rustfmt_may_add_only_trailing_commas_to_generated_struct_fields() {
+    let source = r#"macro_rules! borrowed_type {
+    ($name:ident, $lt:lifetime, $ty:ty) => {
+        pub struct $name<$lt> {
+            pub value: &$lt $ty
+        }
+    };
+}
+
+macro_rules! pass_item {
+    ($item:item) => {
+        $item
+    };
+}
+
+pass_item! {
+    pub struct Generated {
+        pub value: i32
+    }
+}
+"#;
+    let expected = r#"macro_rules! borrowed_type {
+    ($name:ident, $lt:lifetime, $ty:ty) => {
+        pub struct $name<$lt> {
+            pub value: &$lt $ty,
+        }
+    };
+}
+
+macro_rules! pass_item {
+    ($item:item) => {
+        $item
+    };
+}
+
+pass_item! {
+    pub struct Generated {
+        pub value: i32,
+    }
+}
+"#;
+
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+
+    assert_eq!(actual, expected);
+    assert_only_commas_added(source, &actual);
+}
+
+#[test]
+fn nested_generated_macro_rules_is_indented_in_one_public_call() {
+    let source = r#"macro_rules! make_tripler {
+    ($d:tt $name:ident) => {
+        macro_rules!      $name{($d value:expr)=>{$d           value*3};}
+    };
+}
+"#;
+    let expected = r#"macro_rules! make_tripler {
+    ($d:tt $name:ident) => {
+        macro_rules! $name {
+            ($d value:expr) => {
+                $d value * 3
+            };
+        }
+    };
+}
+"#;
+
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn long_macro_matcher_is_wrapped_below_the_style_width() {
+    let source = r#"macro_rules! huge {
+    ($(#[$attr:meta])* $vis:vis fn $name:ident($($arg:ident: $ty:ty),* $(,)?) -> $ret:ty $body:block) => {
+        $(#[$attr])*
+        $vis fn $name($($arg: $ty),*) -> $ret $body
+    };
+}
+"#;
+
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+
+    assert!(actual.contains("macro_rules! huge {\n    (\n"), "{actual}");
+    assert!(
+        actual.lines().all(|line| line.chars().count() <= 100),
+        "{actual}"
+    );
+    assert_only_commas_added(source, &actual);
+}
+
+#[test]
+fn long_simple_macro_argument_list_uses_greedy_line_packing() {
+    // A user-defined macro's invocation arguments should wrap the same way
+    // rustfmt wraps a builtin call like `vec![1, 2, 3, ...]`: pack as many
+    // items per line as fit, not one item per line.
+    let source = r#"macro_rules! values {
+    ($($value:expr),+ $(,)?) => {
+        ($($value),+)
+    };
+}
+
+fn main() {
+    let _ = values!(
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+        26, 27, 28, 29, 30
+    );
+}
+"#;
+    let expected_call = r#"    let _ = values!(
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+        26, 27, 28, 29, 30
+    );"#;
+
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+
+    assert!(actual.contains(expected_call), "{actual}");
+    assert!(actual.lines().all(|line| line.chars().count() <= 100), "{actual}");
+    assert_tokens_preserved(source, &actual);
+}
+
+#[test]
+fn macro_invocation_width_accounts_for_the_trailing_semicolon() {
+    let source = r#"macro_rules! field_accessor {
+    ($name:ident, $($field:ident: $ty:ty),+ $(,)?) => {};
+}
+
+field_accessor!(DataFields, name: String, age: u32, email: String, active: bool);
+"#;
+    // Short argument lists that don't fit on the invocation's own line still
+    // fit on one wrapped line once indented — rustfmt would not explode a
+    // list this short across five lines.
+    let expected_call = r#"field_accessor!(
+    DataFields, name: String, age: u32, email: String, active: bool
+);"#;
+
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+
+    assert!(actual.contains(expected_call), "{actual}");
+    assert!(actual.lines().all(|line| line.chars().count() <= 100));
+    assert_tokens_preserved(source, &actual);
+}
+
+#[test]
+fn dense_but_short_method_chain_stays_on_one_line() {
+    // Regression test: rust-fmt-mf used to hard-code max_width=80 /
+    // chain_width=40 for the non-macro rustfmt pass, which is narrower than
+    // rustfmt's real defaults (100 / 60) and broke chains that any
+    // `cargo fmt` user would expect to stay on one line.
+    let source = r#"pub fn macro_repetition_in_fn() {
+    let v: Vec<i32> = vec![0; 100];
+    let sum: i32 = v.iter().map(|x| x * 2).filter(|x| x % 3 == 0).sum();
+    println!("sum = {}", sum);
+}
+"#;
+
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+
+    assert!(
+        actual.contains("    let sum: i32 = v.iter().map(|x| x * 2).filter(|x| x % 3 == 0).sum();\n"),
+        "{actual}"
+    );
+}
+
+#[test]
+fn layout_normalization_separates_items_but_not_list_entries() {
+    let source = r#"pub mod nested {
+    pub struct Item {
+        pub first: i32,
+
+        pub second: i32,
+    }
+    impl Item {
+        pub fn first(&self) -> i32 {
+            self.first
+        }
+        pub fn second(&self) -> i32 {
+            self.second
+        }
+    }
+}
+"#;
+    let expected = r#"pub mod nested {
+    pub struct Item {
+        pub first: i32,
+        pub second: i32,
+    }
+
+    impl Item {
+        pub fn first(&self) -> i32 {
+            self.first
+        }
+
+        pub fn second(&self) -> i32 {
+            self.second
+        }
+    }
+}
+"#;
+
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+
+    assert_eq!(actual, expected);
+    assert_tokens_preserved(source, &actual);
+}
+
+#[test]
+fn consecutive_module_declarations_stay_compact() {
+    let source = "pub mod first;\n\npub mod second;\n\nmod third;\n";
+    let expected = "pub mod first;\npub mod second;\nmod third;\n";
+
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn default_style_wraps_long_signatures_and_dense_method_chains() {
+    // These stay at rustfmt's real default width (100 / chain 60), not the
+    // narrower 80/40 rust-fmt-mf used to hard-code, so the identifiers here
+    // are deliberately long enough to still exceed 100 columns and need
+    // wrapping either way — verified directly against `rustfmt` itself.
+    let source = r#"pub fn long_signature(alpha: i32, bravo: i32, charlie: i32, delta: i32, echo: i32, foxtrot: i32, golf: i32) -> i32 { alpha + bravo + charlie + delta + echo + foxtrot + golf }
+
+pub fn chain(values: &[i32]) -> i32 { values.iter().map(|value| value * 2).filter(|value| value % 3 == 0).sum() }
+"#;
+
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+
+    assert!(actual.contains("pub fn long_signature(\n"), "{actual}");
+    assert!(
+        actual.contains("values\n        .iter()\n        .map("),
+        "{actual}"
+    );
+    assert_only_commas_added(source, &actual);
+}
+
+#[test]
+fn short_signatures_and_chains_stay_on_one_line_like_rustfmt() {
+    // Regression test for the hard-coded max_width=80 / chain_width=40 bug:
+    // signatures and chains that comfortably fit under rustfmt's real
+    // default width (100 / chain 60) must not be wrapped.
+    let source = r#"pub fn long_signature(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32) -> i32 { a + b + c + d + e + f + g }
+
+pub fn sort(items: &mut [f64]) {
+    items.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+}
+"#;
+
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+
+    assert!(
+        actual.contains(
+            "pub fn long_signature(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32) -> i32 {\n"
+        ),
+        "{actual}"
+    );
+    assert!(
+        actual.contains("items.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));\n"),
+        "{actual}"
+    );
+    assert_only_commas_added(source, &actual);
+}
+
+#[test]
+fn narrow_style_accepts_rustfmt_closure_block_braces() {
+    let source = r#"pub fn sort(items: &mut [f64]) {
+    items.sort_by(|first_value, second_value| first_value.partial_cmp(second_value).unwrap_or(std::cmp::Ordering::Equal));
+}
+"#;
+
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+
+    assert!(
+        actual.contains("items.sort_by(|first_value, second_value| {\n"),
+        "{actual}"
+    );
+    assert_only_layout_tokens_added(source, &actual);
+}
+
+fn assert_only_commas_added(input: &str, output: &str) {
+    assert_only_tokens_added(input, output, &[","]);
+}
+
+fn assert_only_layout_tokens_added(input: &str, output: &str) {
+    assert_only_tokens_added(input, output, &[",", "{", "}"]);
+}
+
+fn assert_only_tokens_added(input: &str, output: &str, allowed: &[&str]) {
+    let before = rust_fmt_mf::parser::significant_tokens(input).unwrap();
+    let after = rust_fmt_mf::parser::significant_tokens(output).unwrap();
+    let mut left = 0usize;
+    let mut right = 0usize;
+    while left < before.len() && right < after.len() {
+        if before[left].kind == after[right].kind && before[left].text == after[right].text {
+            left += 1;
+            right += 1;
+        } else {
+            assert!(
+                allowed.contains(&after[right].text.as_str()),
+                "unexpected token change"
+            );
+            right += 1;
+        }
+    }
+    assert_eq!(left, before.len(), "formatter removed input tokens");
+    assert!(
+        after[right..]
+            .iter()
+            .all(|token| allowed.contains(&token.text.as_str())),
+        "formatter added a disallowed token"
+    );
 }

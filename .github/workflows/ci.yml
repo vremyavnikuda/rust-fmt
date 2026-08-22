@@ -47,6 +47,8 @@ jobs:
       - name: Test Rust formatter
         working-directory: rust-fmt-mf
         run: cargo test --all-targets
+      - name: Test macro audit
+        run: python -m unittest discover -s rust-fmt-mf/tests -p "test_*.py" -v
       - name: Build bundled binary
         run: python scripts/build_current.py --release
       - name: Check Linux executable bit

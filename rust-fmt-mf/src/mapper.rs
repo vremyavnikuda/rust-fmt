@@ -211,7 +211,94 @@ fn format_matcher(source: &str) -> String {
     if contains_comment(source) {
         return format_commented_matcher(source);
     }
-    canonical_token_spacing_with_fragments(source)
+    let canonical = canonical_token_spacing_with_fragments(source);
+    wrap_long_matcher(&canonical)
+}
+
+fn wrap_long_matcher(source: &str) -> String {
+    const CONTENT_WIDTH: usize = 88;
+    if source.chars().count() <= CONTENT_WIDTH {
+        return source.to_string();
+    }
+    let Some(open) = source.chars().next() else {
+        return source.to_string();
+    };
+    let Some(close) = source.chars().last() else {
+        return source.to_string();
+    };
+    if !matches!((open, close), ('(', ')') | ('[', ']') | ('{', '}')) {
+        return source.to_string();
+    }
+    let inner = &source[open.len_utf8()..source.len() - close.len_utf8()];
+    let mut words = Vec::new();
+    let mut offset = 0usize;
+    let mut current = String::new();
+    let mut delimiter_depth = 0usize;
+    for token in tokenize(inner, FrontmatterAllowed::No) {
+        let end = offset + token.len as usize;
+        if token.kind == TokenKind::Whitespace {
+            if delimiter_depth == 0 && !current.is_empty() {
+                words.push(std::mem::take(&mut current));
+            } else if !current.is_empty() {
+                current.push(' ');
+            }
+        } else {
+            current.push_str(&inner[offset..end]);
+            match token.kind {
+                TokenKind::OpenParen | TokenKind::OpenBracket | TokenKind::OpenBrace => {
+                    delimiter_depth += 1
+                }
+                TokenKind::CloseParen | TokenKind::CloseBracket | TokenKind::CloseBrace => {
+                    delimiter_depth = delimiter_depth.saturating_sub(1)
+                }
+                _ => {}
+            }
+        }
+        offset = end;
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    if words.len() < 2 {
+        return source.to_string();
+    }
+
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in words {
+        let next_width =
+            line.chars().count() + usize::from(!line.is_empty()) + word.chars().count();
+        if !line.is_empty() && next_width > CONTENT_WIDTH {
+            if line.ends_with(':') {
+                if let Some(split) = line.rfind(' ') {
+                    let carry = line[split + 1..].to_string();
+                    line.truncate(split);
+                    lines.push(std::mem::take(&mut line));
+                    line = carry;
+                } else {
+                    lines.push(std::mem::take(&mut line));
+                }
+            } else {
+                lines.push(std::mem::take(&mut line));
+            }
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(&word);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+
+    format!(
+        "{open}\n{}\n{close}",
+        lines
+            .into_iter()
+            .map(|line| format!("    {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
 }
 
 pub(crate) fn canonical_token_spacing(source: &str) -> String {
@@ -438,7 +525,133 @@ fn format_body_spacing(source: &str) -> String {
             lines.push(format!("{}{}", " ".repeat(indent), formatted));
         }
     }
-    expand_inline_structs(&lines.join("\n"))
+    let split = split_partially_expanded_items(&lines.join("\n"));
+    let expanded = expand_generated_where_clauses(&expand_inline_structs(&split));
+    add_multiline_struct_trailing_commas(&expanded)
+}
+
+fn split_partially_expanded_items(source: &str) -> String {
+    let mut output = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        let indent = line.len() - line.trim_start().len();
+        let Ok(tokens) = crate::parser::significant_tokens(trimmed) else {
+            output.push(line.to_string());
+            continue;
+        };
+
+        let outer_item = tokens
+            .iter()
+            .position(|token| matches!(token.text.as_str(), "impl" | "trait" | "mod"));
+        let outer_open = outer_item.and_then(|item| {
+            tokens[item + 1..]
+                .iter()
+                .position(|token| token.text == "{")
+                .map(|position| item + 1 + position)
+        });
+        let nested_item = outer_open.and_then(|open| {
+            tokens[open + 1..]
+                .iter()
+                .position(|token| {
+                    matches!(
+                        token.text.as_str(),
+                        "fn" | "impl" | "struct" | "enum" | "type" | "const"
+                    )
+                })
+                .map(|position| open + 1 + position)
+        });
+        if let Some(nested) = nested_item {
+            output.push(format!(
+                "{}{}",
+                " ".repeat(indent),
+                canonical_token_spacing(&trimmed[..tokens[nested].span.start])
+            ));
+            output.push(format!(
+                "{}{}",
+                " ".repeat(indent + 4),
+                canonical_token_spacing(&trimmed[tokens[nested].span.start..])
+            ));
+            continue;
+        }
+
+        if trimmed.contains("$(")
+            && !trimmed.contains('{')
+            && tokens.last().is_some_and(|token| token.text == "}")
+        {
+            let close = tokens.last().expect("checked above").span.start;
+            output.push(format!(
+                "{}{}",
+                " ".repeat(indent),
+                canonical_token_spacing(&trimmed[..close])
+            ));
+            output.push(format!("{}}}", " ".repeat(indent.saturating_sub(4))));
+            continue;
+        }
+
+        output.push(line.to_string());
+    }
+    output.join("\n")
+}
+
+enum BodyDelimiter {
+    Struct { has_field: bool },
+    Other,
+}
+
+fn add_multiline_struct_trailing_commas(source: &str) -> String {
+    let Ok(tokens) = crate::parser::significant_tokens(source) else {
+        return source.to_string();
+    };
+    let mut stack = Vec::new();
+    let mut pending_struct_depth = None;
+    let mut insertions = Vec::new();
+
+    for (index, token) in tokens.iter().enumerate() {
+        match token.text.as_str() {
+            "struct" => pending_struct_depth = Some(stack.len()),
+            "(" | "[" => stack.push(BodyDelimiter::Other),
+            "{" => {
+                if pending_struct_depth == Some(stack.len()) {
+                    stack.push(BodyDelimiter::Struct { has_field: false });
+                    pending_struct_depth = None;
+                } else {
+                    stack.push(BodyDelimiter::Other);
+                }
+            }
+            ":" => {
+                if let Some(BodyDelimiter::Struct { has_field }) = stack.last_mut() {
+                    *has_field = true;
+                }
+            }
+            "," => {
+                if let Some(BodyDelimiter::Struct { has_field }) = stack.last_mut() {
+                    *has_field = false;
+                }
+            }
+            ")" | "]" => {
+                stack.pop();
+            }
+            "}" => {
+                let record = stack.pop();
+                if matches!(record, Some(BodyDelimiter::Struct { has_field: true })) {
+                    if let Some(previous) = index.checked_sub(1).and_then(|i| tokens.get(i)) {
+                        let gap = &source[previous.span.end..token.span.start];
+                        if previous.text != "," && gap.contains('\n') {
+                            insertions.push(previous.span.end);
+                        }
+                    }
+                }
+            }
+            ";" if pending_struct_depth == Some(stack.len()) => pending_struct_depth = None,
+            _ => {}
+        }
+    }
+
+    let mut result = source.to_string();
+    for position in insertions.into_iter().rev() {
+        result.insert(position, ',');
+    }
+    result
 }
 
 fn format_generated_macro(source: &str) -> Option<String> {
@@ -519,23 +732,42 @@ pub(crate) fn expand_inline_structs(source: &str) -> String {
     for line in source.lines() {
         let trimmed = line.trim();
         let indent = line.len() - line.trim_start().len();
-        let item = trimmed.starts_with("struct ")
-            || trimmed.contains(" struct ")
-            || trimmed.starts_with("$vis struct ");
-        let Some(open) = item.then(|| trimmed.find('{')).flatten() else {
+        let Ok(tokens) = crate::parser::significant_tokens(trimmed) else {
             output.push(line.to_string());
             continue;
         };
-        let Some(close) = trimmed.rfind('}') else {
+        let Some(item_token) = tokens.iter().position(|token| {
+            matches!(
+                token.text.as_str(),
+                "struct" | "enum" | "union" | "impl" | "fn" | "trait" | "mod"
+            )
+        }) else {
             output.push(line.to_string());
             continue;
         };
-        if open >= close {
+        if tokens[..item_token]
+            .iter()
+            .any(|token| matches!(token.text.as_str(), "let" | "=" | "=>" | "return"))
+        {
             output.push(line.to_string());
             continue;
         }
+        let Some(close_token) = tokens.iter().rposition(|token| token.text == "}") else {
+            output.push(line.to_string());
+            continue;
+        };
+        let Some(open_token) = (item_token + 1..close_token).find(|&candidate| {
+            tokens[candidate].text == "{"
+                && matching_text_delimiter(&tokens, candidate) == Some(close_token)
+        }) else {
+            output.push(line.to_string());
+            continue;
+        };
+        let open = tokens[open_token].span.start;
+        let close = tokens[close_token].span.start;
+        let close_end = tokens[close_token].span.end;
         let inner = canonical_token_spacing(&trimmed[open + 1..close]);
-        let header = trimmed[..open].trim_end();
+        let header = canonical_token_spacing(&trimmed[..open]);
         if header.starts_with("#[") {
             if let Some(attribute_end) = header.find("] ") {
                 output.push(format!(
@@ -555,14 +787,110 @@ pub(crate) fn expand_inline_structs(source: &str) -> String {
             output.push(format!("{}{} {{", " ".repeat(indent), header));
         }
         if !inner.is_empty() {
-            output.push(format!("{}{}", " ".repeat(indent + 4), inner));
+            let nested = expand_inline_structs(&inner);
+            for nested_line in nested.lines() {
+                output.push(format!(
+                    "{}{}",
+                    " ".repeat(indent + 4),
+                    nested_line.trim_start()
+                ));
+            }
         }
-        output.push(format!("{}}}", " ".repeat(indent)));
+        output.push(format!(
+            "{}}}{}",
+            " ".repeat(indent),
+            canonical_token_spacing(&trimmed[close_end..])
+        ));
     }
     output.join("\n")
 }
 
+fn expand_generated_where_clauses(source: &str) -> String {
+    let mut output = Vec::new();
+    let mut awaiting_brace = false;
+
+    for line in source.lines() {
+        let trimmed = line.trim();
+        let tokens = crate::parser::significant_tokens(trimmed).unwrap_or_default();
+        let item = tokens
+            .iter()
+            .position(|token| matches!(token.text.as_str(), "struct" | "enum" | "union"));
+        let where_token = item.and_then(|item| {
+            tokens[item + 1..]
+                .iter()
+                .position(|token| token.text == "where")
+                .map(|position| item + 1 + position)
+        });
+
+        if let Some(where_token) = where_token {
+            let where_start = tokens[where_token].span.start;
+            let where_end = tokens[where_token].span.end;
+            output.push(canonical_token_spacing(&trimmed[..where_start]));
+            output.push("where".to_string());
+            let remainder = trimmed[where_end..].trim();
+            if let Some(open) = first_brace_span(remainder) {
+                push_where_remainder(&mut output, remainder, open);
+                awaiting_brace = false;
+            } else {
+                if !remainder.is_empty() {
+                    output.push(canonical_token_spacing(remainder));
+                }
+                awaiting_brace = true;
+            }
+            continue;
+        }
+
+        if awaiting_brace {
+            if let Some(open) = first_brace_span(trimmed) {
+                push_where_remainder(&mut output, trimmed, open);
+                awaiting_brace = false;
+                continue;
+            }
+        }
+
+        output.push(line.to_string());
+    }
+
+    output.join("\n")
+}
+
+fn first_brace_span(source: &str) -> Option<std::ops::Range<usize>> {
+    crate::parser::significant_tokens(source)
+        .ok()?
+        .into_iter()
+        .rfind(|token| token.text == "{")
+        .map(|token| token.span)
+}
+
+fn push_where_remainder(output: &mut Vec<String>, remainder: &str, open: std::ops::Range<usize>) {
+    let clause = canonical_token_spacing(&remainder[..open.start]);
+    if !clause.is_empty() {
+        output.push(clause);
+    }
+    output.push("{".to_string());
+    let suffix = remainder[open.end..].trim();
+    if !suffix.is_empty() {
+        output.push(canonical_token_spacing(suffix));
+    }
+}
+
 fn format_commented_matcher(source: &str) -> String {
+    let trimmed = source.trim();
+    let expanded;
+    let source = if trimmed.contains("//")
+        && matches!(trimmed.as_bytes().first(), Some(b'(' | b'[' | b'{'))
+        && matches!(trimmed.as_bytes().last(), Some(b')' | b']' | b'}'))
+    {
+        expanded = format!(
+            "{}\n{}\n{}",
+            &trimmed[..1],
+            trimmed[1..trimmed.len() - 1].trim_matches('\n'),
+            &trimmed[trimmed.len() - 1..]
+        );
+        expanded.as_str()
+    } else {
+        source
+    };
     let mut output = Vec::new();
     let mut depth = 0usize;
     for line in source
@@ -1110,7 +1438,15 @@ fn replace_rep_markers(text: &str, repetition_prefix: &str) -> String {
                     } else {
                         normalize_inner_spacing(&inner_replaced)
                     };
-                    if inner_final.contains('\n') || inner_final.contains('\r') {
+                    let nested_block = kind == "question"
+                        && inner_final.contains("$(")
+                        && (inner_final.contains(": ")
+                            || inner_final.contains("pub ")
+                            || inner_final.contains(';')
+                            || ["struct ", "enum ", "impl ", "fn ", "trait ", "mod "]
+                                .iter()
+                                .any(|keyword| inner_final.contains(keyword)));
+                    if inner_final.contains('\n') || inner_final.contains('\r') || nested_block {
                         // Multi-line: re-indent relative to marker position
                         let line_start =
                             text[..marker_start].rfind('\n').map(|p| p + 1).unwrap_or(0);

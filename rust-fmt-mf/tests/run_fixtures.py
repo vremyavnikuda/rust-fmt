@@ -9,6 +9,14 @@ import sys
 from pathlib import Path
 
 
+CORPUS_GOLDENS = {
+    Path("src/examples/macro_edge_cases.rs"): "real_macro_edge_cases.expected",
+    Path("src/examples/macro_heavy.rs"): "real_macro_heavy.expected",
+    Path("src/examples/macro_missing_cases.rs"): "real_macro_missing_cases.expected",
+    Path("src/main_fmt.rs"): "real_main_fmt.expected",
+}
+
+
 def project_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
@@ -22,12 +30,17 @@ def find_binary(root: Path) -> Path:
     raise FileNotFoundError("build rust-fmt-mf before running the audit")
 
 
-def arguments() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", type=Path)
     parser.add_argument("--rustfmt", default="rustfmt")
     parser.add_argument("--skip-corpus", action="store_true")
-    return parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def corpus_expected_path(relative: Path, fixture_dir: Path) -> Path | None:
+    filename = CORPUS_GOLDENS.get(relative)
+    return fixture_dir / filename if filename is not None else None
 
 
 def run(command: list[str], source: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -48,6 +61,27 @@ def parse_outcomes(stderr: str) -> list[tuple[str, str, str]]:
         if len(fields) >= 4 and fields[0] == "rust-fmt-mf":
             outcomes.append((fields[1], fields[2], fields[4] if len(fields) == 5 else ""))
     return outcomes
+
+
+def count_macro_outcomes(outcomes: list[tuple[str, str, str]]) -> tuple[int, int, int]:
+    total = len(outcomes)
+    handled = sum(status != "SKIPPED" for status, _, _ in outcomes)
+    formatted = sum(status == "FORMATTED" for status, _, _ in outcomes)
+    return total, handled, formatted
+
+
+def golden_failure(expected: str, actual: str) -> str | None:
+    if actual == expected:
+        return None
+
+    def without_blank_lines(source: str) -> str:
+        return "".join(
+            line for line in source.splitlines(keepends=True) if line.strip()
+        )
+
+    if without_blank_lines(actual) == without_blank_lines(expected):
+        return "GOLDEN_BLANK_LINES"
+    return "GOLDEN_DIFF"
 
 
 def expected_skips(input_path: Path) -> set[str]:
@@ -120,16 +154,33 @@ def audit_case(
         second = subprocess.CompletedProcess([], 1, "", "not run")
         outcomes: list[tuple[str, str, str]] = []
     else:
-        syntax = run([rustfmt, "--edition", "2021", "--emit", "stdout"], first.stdout)
+        syntax = run(
+            [
+                rustfmt,
+                "--edition",
+                "2021",
+                "--emit",
+                "stdout",
+                "--config",
+                "format_macro_bodies=false",
+                "--config",
+                "format_macro_matchers=false",
+            ],
+            first.stdout,
+        )
         second = run([str(binary)], first.stdout)
         outcomes = parse_outcomes(first.stderr)
         if syntax.returncode != 0:
             failures.append("SYNTAX_ERROR")
+        elif expected is None and syntax.stdout != first.stdout:
+            failures.append("RUSTFMT_DIFF")
         if second.returncode != 0 or second.stdout != first.stdout:
             failures.append("NON_IDEMPOTENT")
 
-    if expected is not None and first.stdout != expected:
-        failures.append("GOLDEN_DIFF")
+    if expected is not None:
+        mismatch = golden_failure(expected, first.stdout)
+        if mismatch is not None:
+            failures.append(mismatch)
 
     skipped = {name for status, name, _ in outcomes if status == "SKIPPED"}
     expected_skip_names = expected_skips(input_path) if enforce_expected_skips else skipped
@@ -156,7 +207,7 @@ def audit_case(
         "output": first.stdout,
         "outcomes": outcomes,
         "safe": not any(item in failures for item in ("FORMAT_ERROR", "SYNTAX_ERROR", "NON_IDEMPOTENT")),
-        "golden": expected is None or first.stdout == expected,
+        "exact": None if expected is None else first.stdout == expected,
     }
 
 
@@ -165,7 +216,7 @@ def percent(passed: int, total: int) -> str:
 
 
 def main() -> int:
-    args = arguments()
+    args = parse_args()
     root = project_root()
     repo = root.parent
     binary = (args.binary or find_binary(root)).resolve()
@@ -190,8 +241,9 @@ def main() -> int:
         shutil.rmtree(audit_root)
     audit_root.mkdir(parents=True)
 
-    total_cases = safe_cases = golden_cases = 0
-    macro_total = macro_deep = 0
+    total_cases = safe_cases = 0
+    exact_total = exact_passed = 0
+    macro_total = macro_handled = macro_formatted = 0
     failed = False
 
     print(f"Discovered {len(inputs)} golden fixtures")
@@ -200,10 +252,13 @@ def main() -> int:
         result = audit_case(binary, args.rustfmt, input_path, expected, audit_root, input_path.stem, True)
         total_cases += 1
         safe_cases += int(result["safe"])
-        golden_cases += int(result["golden"])
+        exact_total += 1
+        exact_passed += int(result["exact"])
         outcomes = result["outcomes"]
-        macro_total += len(outcomes)
-        macro_deep += sum(status != "SKIPPED" for status, _, _ in outcomes)
+        case_total, case_handled, case_formatted = count_macro_outcomes(outcomes)
+        macro_total += case_total
+        macro_handled += case_handled
+        macro_formatted += case_formatted
         failures = result["failures"]
         print(f"{input_path.stem}: {'PASS' if not failures else ', '.join(failures)}")
         failed |= bool(failures)
@@ -216,20 +271,31 @@ def main() -> int:
         print(f"Discovered {len(corpus_files)} test-rs source files")
         for input_path in corpus_files:
             relative = input_path.relative_to(corpus_root)
+            expected_path = corpus_expected_path(relative, fixture_dir)
+            expected = (
+                expected_path.read_text(encoding="utf-8")
+                if expected_path is not None
+                else None
+            )
             result = audit_case(
                 binary,
                 args.rustfmt,
                 input_path,
-                None,
+                expected,
                 audit_root,
                 safe_name("corpus", relative),
                 False,
             )
             total_cases += 1
             safe_cases += int(result["safe"])
+            if expected is not None:
+                exact_total += 1
+                exact_passed += int(result["exact"])
             outcomes = result["outcomes"]
-            macro_total += len(outcomes)
-            macro_deep += sum(status != "SKIPPED" for status, _, _ in outcomes)
+            case_total, case_handled, case_formatted = count_macro_outcomes(outcomes)
+            macro_total += case_total
+            macro_handled += case_handled
+            macro_formatted += case_formatted
             failures = result["failures"]
             print(f"test-rs/{relative}: {'PASS' if not failures else ', '.join(failures)}")
             failed |= bool(failures)
@@ -248,11 +314,18 @@ def main() -> int:
         failed |= check.returncode != 0
 
     print()
-    print(f"Safety coverage: {safe_cases}/{total_cases} ({percent(safe_cases, total_cases)})")
-    print(f"Golden coverage: {golden_cases}/{len(inputs)} ({percent(golden_cases, len(inputs))})")
-    print(f"Deep-format coverage: {macro_deep}/{macro_total} ({percent(macro_deep, macro_total)})")
+    print(f"Execution safety: {safe_cases}/{total_cases} ({percent(safe_cases, total_cases)})")
+    print(
+        f"Exact-output conformance: {exact_passed}/{exact_total} "
+        f"({percent(exact_passed, exact_total)})"
+    )
+    print(
+        f"Macros handled without skip: {macro_handled}/{macro_total} "
+        f"({percent(macro_handled, macro_total)})"
+    )
+    print(f"Macros changed on this input: {macro_formatted}/{macro_total}")
     print(f"Diagnostics: {audit_root}")
-    return int(failed or safe_cases != total_cases or golden_cases != len(inputs))
+    return int(failed or safe_cases != total_cases or exact_passed != exact_total)
 
 
 if __name__ == "__main__":

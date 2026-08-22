@@ -25,7 +25,9 @@ pub struct DataFields {
     pub active: bool,
 }
 
-field_accessor!(DataFields, name: String, age: u32, email: String, active: bool);
+field_accessor!(
+    DataFields, name: String, age: u32, email: String, active: bool
+);
 
 define_enum! {
     MyGeneratedEnum {
@@ -37,12 +39,10 @@ define_enum! {
 pub fn use_all(data: &DataFields) {
     let encoded = run_length_encode!(1, 1, 1, 2);
     println!("{:?}", encoded);
-
     match MyGeneratedEnum::Alpha {
         MyGeneratedEnum::Alpha => println!("alpha"),
         _ => {}
     }
-
     println!("{}", data.name());
 }
 

@@ -789,3 +789,55 @@ fn apply_deep_definitions_batch_falls_back_when_batch_result_corrupts_tokens() {
         "both definitions should format cleanly via the fallback loop, none should be SKIPPED"
     );
 }
+
+#[test]
+fn crlf_input_with_a_comment_formats_without_erroring() {
+    let source = "//! doc comment\r\nmacro_rules! one {\r\n    ($x:expr) => { $x + 1 };\r\n}\r\n\r\npub fn use_one() {\r\n    one!(1);\r\n}\r\n";
+    let result = super::format_source(source, "rustfmt", "2021", None);
+    assert!(
+        result.is_ok(),
+        "CRLF input with a leading comment must not error: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn crlf_input_round_trips_and_preserves_line_ending_style() {
+    let source = "//! doc comment\r\nmacro_rules! one {\r\n    ($x:expr) => { $x + 1 };\r\n}\r\n\r\npub fn use_one() {\r\n    one!(1);\r\n}\r\n";
+    let result = super::format_source(source, "rustfmt", "2021", None).unwrap();
+    assert!(
+        result.contains("\r\n"),
+        "output must use CRLF to match the original file's line-ending style: {result:?}"
+    );
+    // Every line ending must be CRLF, not a bare LF: once every "\r\n" pair
+    // is removed, no bare '\n' (or stray '\r') should remain.
+    let stripped = result.replace("\r\n", "");
+    assert!(
+        !stripped.contains('\n') && !stripped.contains('\r'),
+        "found a line ending that isn't a paired CRLF: {result:?}"
+    );
+}
+
+#[test]
+fn crlf_report_spans_point_at_the_original_crlf_source() {
+    let source = "//! doc comment\r\nmacro_rules! one {\r\n    ($x:expr) => { $x + 1 };\r\n}\r\n";
+    let report = super::format_source_with_report(source, "rustfmt", "2021", None).unwrap();
+    let outcome = &report.macros[0];
+    // The parser's span for a definition already includes an immediately
+    // preceding doc comment (pre-existing, CRLF-independent behavior,
+    // verified identically on plain LF input) — the CRLF-awareness this
+    // test targets is that the slice below is byte-exact against the
+    // *original* CRLF source, not shifted by the internal LF normalization.
+    assert_eq!(
+        &source[outcome.span.clone()],
+        "//! doc comment\r\nmacro_rules! one {\r\n    ($x:expr) => { $x + 1 };\r\n}",
+        "the reported span must slice the ORIGINAL CRLF source correctly, not a shifted position"
+    );
+}
+
+#[test]
+fn lf_only_input_is_completely_unaffected_by_crlf_handling() {
+    let source = "//! doc comment\nmacro_rules! one {\n    ($x:expr) => { $x + 1 };\n}\n\npub fn use_one() {\n    one!(1);\n}\n";
+    let result = super::format_source(source, "rustfmt", "2021", None).unwrap();
+    assert!(!result.contains('\r'), "LF-only input must never gain a CR: {result:?}");
+}

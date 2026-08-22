@@ -1321,7 +1321,42 @@ pub fn format_source(
     Ok(format_source_with_report(source, rustfmt_path, edition, config_path)?.text)
 }
 
+/// Remap a byte span computed against `lf_text` (line endings already
+/// normalized to `\n`) back to the equivalent span in the original text
+/// that had `\r\n` at every one of those newlines. Each `\n` at or before
+/// an offset accounts for one extra `\r` byte inserted before it.
+fn remap_lf_span_to_crlf(span: std::ops::Range<usize>, lf_text: &str) -> std::ops::Range<usize> {
+    let start = span.start + lf_text[..span.start].bytes().filter(|&b| b == b'\n').count();
+    let end = span.end + lf_text[..span.end].bytes().filter(|&b| b == b'\n').count();
+    start..end
+}
+
 pub fn format_source_with_report(
+    source: &str,
+    rustfmt_path: &str,
+    edition: &str,
+    config_path: Option<&str>,
+) -> anyhow::Result<FormatResult> {
+    if !source.contains("\r\n") {
+        return format_source_with_report_impl(source, rustfmt_path, edition, config_path);
+    }
+    // rustfmt (and this crate's own shadow-file processing) silently drops
+    // `\r` when fed CRLF input, which the safety oracle then correctly
+    // reports as a changed significant token (a LineComment's literal text
+    // includes its trailing `\r`). Normalize to `\n` for every internal
+    // pass, then restore `\r\n` in the final output and remap every
+    // reported span back to the original CRLF source's coordinates.
+    let normalized_source = source.replace("\r\n", "\n");
+    let mut result =
+        format_source_with_report_impl(&normalized_source, rustfmt_path, edition, config_path)?;
+    for outcome in &mut result.macros {
+        outcome.span = remap_lf_span_to_crlf(outcome.span.clone(), &normalized_source);
+    }
+    result.text = result.text.replace('\n', "\r\n");
+    Ok(result)
+}
+
+fn format_source_with_report_impl(
     source: &str,
     rustfmt_path: &str,
     edition: &str,

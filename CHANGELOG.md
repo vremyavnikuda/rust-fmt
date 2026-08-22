@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+- Formatting a file with CRLF line endings and at least one `//` comment failed closed (`SKIPPED` or a hard error) instead of formatting, because `rustfmt` and this crate's own shadow-file processing silently drop `\r` on output while the safety oracle correctly detects the resulting change to a comment's literal text. `format_source`/`format_source_with_report` now detect CRLF input, normalize to `\n` for every internal pass, and restore `\r\n` (remapping reported macro spans accordingly) in the final output. LF-only input is unaffected.
+- Added `.gitattributes` forcing LF line endings for all tracked text files, so checking out this repository on a Windows machine with the common `core.autocrlf=true` default no longer turns committed `.rs` fixtures into CRLF in the first place.
+
 ## 0.1.9 - 2026-08-23
 
 ### Changed

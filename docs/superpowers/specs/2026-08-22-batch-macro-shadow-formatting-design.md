@@ -9,14 +9,13 @@ Cut the number of `rustfmt` subprocess spawns needed to format a macro-heavy fil
 Measured directly (not estimated) on `test-rs/src/examples/macro_heavy.rs` — 371 lines, 21 `macro_rules!` definitions, already fully formatted (every macro reports `UNCHANGED`):
 
 - **Wall time:** ~1.0s per format (`/usr/bin/time`, 3 runs: 1.04s / 0.96s / 0.96s), for a file that changes nothing. This is the common case (re-saving an already-formatted file) and it is roughly 10-100x slower than what an editor format-on-save should feel like.
-- **`rustfmt` subprocess count:** 47 successful spawns for one `format_source_with_report` call, measured with `rustfmt_call_count()` (the counter incremented once per successful `Command::spawn()` inside `run_rustfmt`/`run_rustfmt_no_macro` — this is the correct methodology; an earlier draft of this section used `strace -f -e trace=execve | grep 'execve.*rustfmt' | wc -l` and reported 94, but on a rustup-managed toolchain every `rustfmt` invocation execs twice — once for the `~/.cargo/bin/rustfmt` shim, once for its exec into the real `~/.rustup/toolchains/.../bin/rustfmt` binary — so the strace-based method double-counts every real spawn. The 47/45/2/17 figures below were confirmed directly with `rustfmt_call_count()` against the pre-batching code, not merely inferred by halving), split by mode:
+- **`rustfmt` subprocess count:** 47 successful spawns for one `format_source_with_report` call, measured with `rustfmt_call_count()` (the counter incremented once per successful `Command::spawn()` inside `run_rustfmt`/`run_rustfmt_no_macro` — this is the correct methodology; an earlier draft of this section used `strace -f -e trace=execve | grep 'execve.*rustfmt' | wc -l` and reported 94, but on a rustup-managed toolchain every `rustfmt` invocation execs twice — once for the `~/.cargo/bin/rustfmt` shim, once for its exec into the real `~/.rustup/toolchains/.../bin/rustfmt` binary — so the strace-based method double-counts every real spawn. The 47/45/2 figures below were confirmed directly with `rustfmt_call_count()` against the pre-batching code), split by mode:
   - 45 spawns with `--config format_macro_bodies=true` (the "shadow file" trick, i.e. `run_rustfmt`)
-  - 2 spawns with `--config format_macro_bodies=false` (`run_rustfmt_no_macro`, one per convergence pass plus final validation)
-- **Per-pass breakdown of the 45 shadow-mode calls** (one full pass ≈ 17 calls, same proportions as originally observed since the doubling artifact applies uniformly to every call site):
-  - **~11 calls (62%)** — one `run_rustfmt` per `macro_rules!` definition, from `format_definition_once`'s shadow-file call (`lib.rs:1041`)
-  - ~6 calls (35%) — one `try_format_as_mod`/`try_format_as_fn` pair per `$()` repetition body, from `preformat_rep_bodies` (`lib.rs:146-148`)
-  - <1 call (3%) — item/block-shaped macro invocation formatting, from `format_invocation_inner` (`lib.rs:512-513`)
-- 17 calls/pass × ~2.6 passes to reach the fixed point ≈ the observed 45.
+  - 2 spawns with `--config format_macro_bodies=false` (`run_rustfmt_no_macro`, one per convergence pass plus final validation — this file converges in a single pass, confirmed by the same `rustfmt_call_count()` instrumentation: `run_rustfmt_no_macro` fires once per `format_source_once` call plus once for post-convergence validation)
+- **Per-call-site breakdown of the 45 shadow-mode calls, all in this one convergence pass** (measured with call-site instrumentation, not inferred from the totals above):
+  - **21 calls (47%)** — one `run_rustfmt` per `macro_rules!` definition, from `format_definition_once`'s shadow-file call (`lib.rs:1041`) — matches the fixture's 21 definitions exactly, one call each
+  - 23 calls (51%) — one `try_format_as_mod`/`try_format_as_fn` pair per `$()` repetition body, from `preformat_rep_bodies` (`lib.rs:146-148`)
+  - 1 call (2%) — item/block-shaped macro invocation formatting, from `format_invocation_inner` (`lib.rs:512-513`)
 
 The dominant cost is the **one-`rustfmt`-call-per-macro-definition** pattern. Definitions already batch their own arms into one shadow file (`build_shadow_file_from_strings` already accepts multiple body strings) — the missing piece is batching *across* definitions in the same file.
 
@@ -26,12 +25,12 @@ The dominant cost is the **one-`rustfmt`-call-per-macro-definition** pattern. De
 - Batch all `macro_rules!` definitions in a file that support deep formatting (`supports_deep_format`) into **one** combined shadow file and **one** `run_rustfmt` call per convergence pass, instead of one call per definition.
 - A safe fallback: if the batched result fails the existing `ensure_tokens_preserved` check, fall back to the current one-call-per-definition sequential path for that pass, so per-definition `SKIPPED` isolation behaves exactly as it does today.
 - A permanent, deterministic (non-timing-based) regression test asserting the `rustfmt` call count for a known multi-macro fixture stays low.
-- A measured before/after comparison using the same `strace`-based method as the Evidence section, recorded in `CHANGELOG.md`.
+- A measured before/after comparison using `rustfmt_call_count()` (not `strace`, which double-counts on rustup-managed toolchains — see Evidence section), recorded in `CHANGELOG.md`.
 
 ### Excluded (explicit follow-up, not this plan)
-- Batching the 12 repetition-body calls (`preformat_rep_bodies`) across a file — smaller win (35% vs 62% of per-pass calls), separate call site, separate plan.
-- Batching the item/block invocation-formatting calls (`format_invocation_inner`) — smallest win (3%) in this fixture, separate plan.
-- Any change to `run_rustfmt_no_macro` / `final_format_pass` (the 4 non-shadow calls) — out of scope.
+- Batching the 23 repetition-body calls (`preformat_rep_bodies`) across a file — the larger remaining share (51% vs 47% for definitions), but a separate call site with its own batching design, separate plan.
+- Batching the item/block invocation-formatting calls (`format_invocation_inner`) — smallest remaining share (2%) in this fixture, separate plan.
+- Any change to `run_rustfmt_no_macro` / `final_format_pass` (the 2 non-shadow calls) — out of scope.
 - Any change to formatting *output* — this plan must not change what gets formatted or how, only how many processes it takes to do it.
 
 ## Architecture
@@ -119,7 +118,7 @@ Add a process-wide `AtomicUsize` counter in `formatter.rs`, incremented once per
 1. **Perf regression test (new, drives the implementation):** format a fixture with several independent healthy `macro_rules!` definitions, assert `rustfmt_call_count()` stays at or below a small fixed ceiling regardless of definition count. Written first; fails against the current per-definition implementation; passes once batching lands.
 2. **Existing full regression suite is the correctness gate:** all current `cargo test --release` (91 tests) and `python3 tests/run_fixtures.py` (100% exact-output conformance) must stay green with byte-identical output — this plan is not allowed to change what gets formatted.
 3. **Fallback-path test:** extract the "is the batch safe to apply" branch into a small pure function, `accepted_batch_result(original: &str, batch_result: anyhow::Result<String>) -> Option<String>`, and unit-test it directly with synthetic `Ok`/`Err` values (including an `Ok` whose tokens don't match `original`). This proves the fallback decision is correct without needing a fake `rustfmt` binary, which would be fragile across the Linux/Windows/macOS targets this project bundles.
-4. **Before/after measurement:** repeat the `strace`-based call count and `/usr/bin/time` wall-clock measurement from the Evidence section on the same fixture, record the actual improvement.
+4. **Before/after measurement:** repeat the `rustfmt_call_count()`-based call count and `/usr/bin/time` wall-clock measurement from the Evidence section on the same fixture, record the actual improvement.
 
 ## Implementation Boundaries
 

@@ -1046,6 +1046,13 @@ fn build_arm_shadow_fragment(
     (inner_str, mapping)
 }
 
+/// Format a single macro definition. This is the N=1 special case of
+/// `format_definitions_batch` — kept as a separate named function because
+/// the fallback path in `format_source_once` calls it per-definition when a
+/// batch fails the token-preservation check, but its body is exactly
+/// `format_definitions_batch` with a one-element slice so the fallback is
+/// structurally guaranteed to reproduce the same formatting as the batch
+/// path, rather than relying on two hand-maintained copies staying in sync.
 fn format_definition_once(
     source: &str,
     definition: &crate::types::MacroDef,
@@ -1056,29 +1063,7 @@ fn format_definition_once(
     if !supports_deep_format(source, definition) {
         return Ok(format_definition_without_brace_bodies(source, definition));
     }
-    let mut all_replaced_bodies_str: Vec<String> = Vec::new();
-    let mut all_mappings: Vec<Mapping> = Vec::new();
-    let marker_prefix = unique_prefix(source);
-    for arm in &definition.arms {
-        let (inner_str, mapping) = build_arm_shadow_fragment(
-            source,
-            arm,
-            &marker_prefix,
-            rustfmt_path,
-            edition,
-            config_path,
-        );
-        all_replaced_bodies_str.push(inner_str);
-        all_mappings.push(mapping);
-    }
-    let shadow_code = build_shadow_file_from_strings(&all_replaced_bodies_str, &marker_prefix);
-    let formatted_shadow = run_rustfmt(&shadow_code, rustfmt_path, edition, config_path)?;
-    Ok(apply_formatting(
-        source,
-        std::slice::from_ref(definition),
-        &formatted_shadow,
-        &all_mappings,
-    ))
+    format_definitions_batch(source, &[definition], rustfmt_path, edition, config_path)
 }
 
 fn supports_deep_format(source: &str, definition: &crate::types::MacroDef) -> bool {
@@ -1131,6 +1116,67 @@ fn format_definitions_batch(
     ))
 }
 
+/// Try to format `batchable` definitions with one combined `batch` call; if
+/// the result is rejected by `accepted_batch_result` (the batch call
+/// errored, or its output fails the token-preservation check), fall back to
+/// formatting each definition individually via `format_definition_once`, so
+/// a single problematic definition among many healthy ones is still
+/// isolated and reported `SKIPPED` individually instead of the whole batch
+/// failing.
+///
+/// `batch` is injected rather than calling `format_definitions_batch`
+/// directly so this can be unit-tested without a real `rustfmt` binary:
+/// production code (`format_source_once`) passes a closure that calls
+/// `format_definitions_batch`; tests pass a closure that deliberately
+/// errors or returns token-corrupting output, to prove the fallback loop
+/// actually runs end-to-end and still formats the healthy definitions in
+/// the same call correctly.
+fn apply_deep_definitions_batch(
+    mut text: String,
+    batchable: &[(usize, &crate::types::MacroDef)],
+    skipped_reasons: &mut [Option<String>],
+    batch: impl FnOnce(&str, &[&crate::types::MacroDef]) -> anyhow::Result<String>,
+    rustfmt_path: &str,
+    edition: &str,
+    config_path: Option<&str>,
+) -> String {
+    if batchable.is_empty() {
+        return text;
+    }
+    let just_defs: Vec<&crate::types::MacroDef> = batchable
+        .iter()
+        .map(|(_, definition)| *definition)
+        .collect();
+    let batch_result = batch(&text, &just_defs);
+    match accepted_batch_result(&text, batch_result) {
+        Some(candidate) => text = candidate,
+        None => {
+            // Fall back to the proven one-call-per-definition path so a
+            // single problematic definition among many healthy ones is
+            // still isolated and reported SKIPPED individually.
+            for &(index, definition) in batchable.iter().rev() {
+                match format_definition_once(&text, definition, rustfmt_path, edition, config_path)
+                {
+                    Ok(candidate) => match ensure_tokens_preserved(&text, &candidate) {
+                        Ok(()) => text = candidate,
+                        Err(error) => {
+                            if let Some(slot) = skipped_reasons.get_mut(index) {
+                                *slot = Some(format!("lossless check failed: {error}"));
+                            }
+                        }
+                    },
+                    Err(error) => {
+                        if let Some(slot) = skipped_reasons.get_mut(index) {
+                            *slot = Some(format!("shadow formatting failed: {error}"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    text
+}
+
 fn format_source_once(
     source: &str,
     rustfmt_path: &str,
@@ -1173,7 +1219,7 @@ fn format_source_once(
     } else {
         definitions.clone()
     };
-    debug_assert_eq!(refreshed_definitions.len(), definitions.len());
+    assert_eq!(refreshed_definitions.len(), definitions.len());
 
     let deep_definitions: Vec<(usize, &crate::types::MacroDef)> = refreshed_definitions
         .iter()
@@ -1208,39 +1254,17 @@ fn format_source_once(
             }
         }
 
-        if !batchable.is_empty() {
-            let just_defs: Vec<&crate::types::MacroDef> = batchable
-                .iter()
-                .map(|(_, definition)| *definition)
-                .collect();
-            let batch_result =
-                format_definitions_batch(&text, &just_defs, rustfmt_path, edition, config_path);
-            match accepted_batch_result(&text, batch_result) {
-                Some(candidate) => text = candidate,
-                None => {
-                    // Fall back to the proven one-call-per-definition path so a
-                    // single problematic definition among many healthy ones is
-                    // still isolated and reported SKIPPED individually.
-                    for &(index, definition) in batchable.iter().rev() {
-                        match format_definition_once(&text, definition, rustfmt_path, edition, config_path) {
-                            Ok(candidate) => match ensure_tokens_preserved(&text, &candidate) {
-                                Ok(()) => text = candidate,
-                                Err(error) => {
-                                    if let Some(slot) = skipped_reasons.get_mut(index) {
-                                        *slot = Some(format!("lossless check failed: {error}"));
-                                    }
-                                }
-                            },
-                            Err(error) => {
-                                if let Some(slot) = skipped_reasons.get_mut(index) {
-                                    *slot = Some(format!("shadow formatting failed: {error}"));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        text = apply_deep_definitions_batch(
+            text,
+            &batchable,
+            &mut skipped_reasons,
+            |batch_text, defs| {
+                format_definitions_batch(batch_text, defs, rustfmt_path, edition, config_path)
+            },
+            rustfmt_path,
+            edition,
+            config_path,
+        );
 
         if !excluded_indices.is_empty() {
             // The batch step above (if it ran) may have shifted byte
@@ -1248,12 +1272,13 @@ fn format_source_once(
             // to get their current spans rather than reusing stale ones
             // captured before that edit.
             let current_definitions = parse_macro_defs(&text)?;
-            debug_assert_eq!(current_definitions.len(), refreshed_definitions.len());
+            assert_eq!(current_definitions.len(), refreshed_definitions.len());
             for &index in excluded_indices.iter().rev() {
                 let Some(definition) = current_definitions.get(index) else {
                     continue;
                 };
-                match format_definition_once(&text, definition, rustfmt_path, edition, config_path) {
+                match format_definition_once(&text, definition, rustfmt_path, edition, config_path)
+                {
                     Ok(candidate) => match ensure_tokens_preserved(&text, &candidate) {
                         Ok(()) => text = candidate,
                         Err(error) => {

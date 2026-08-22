@@ -1,5 +1,20 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static RUSTFMT_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Number of times `run_rustfmt`/`run_rustfmt_no_macro` have successfully
+/// spawned a `rustfmt` process since the last `reset_rustfmt_call_count()`.
+/// Test-only instrumentation for asserting on subprocess-spawn counts
+/// instead of flaky wall-clock timing.
+pub fn rustfmt_call_count() -> usize {
+    RUSTFMT_CALL_COUNT.load(Ordering::SeqCst)
+}
+
+pub fn reset_rustfmt_call_count() {
+    RUSTFMT_CALL_COUNT.store(0, Ordering::SeqCst);
+}
 
 /// Run rustfmt on the final result (without format_macro_bodies)
 /// to format non-macro code and macro invocations.
@@ -20,6 +35,7 @@ pub fn run_rustfmt_no_macro(
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     let mut child = cmd.spawn()?;
+    RUSTFMT_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(source.as_bytes())?;
     }
@@ -52,6 +68,7 @@ pub fn run_rustfmt(
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     let mut child = cmd.spawn()?;
+    RUSTFMT_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
     // Write shadow code to stdin
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(shadow_code.as_bytes())?;

@@ -550,3 +550,13 @@ fn test_shadow_has_allow_attributes() {
             || shadow.contains("macro_rules! __rustfmt_mf_arm_0")
     );
 }
+
+#[test]
+fn rustfmt_call_count_tracks_successful_spawns() {
+    crate::formatter::reset_rustfmt_call_count();
+    assert_eq!(crate::formatter::rustfmt_call_count(), 0);
+    crate::formatter::run_rustfmt("fn main() {}", "rustfmt", "2021", None).unwrap();
+    assert_eq!(crate::formatter::rustfmt_call_count(), 1);
+    crate::formatter::run_rustfmt_no_macro("fn main() {}", "rustfmt", "2021", None).unwrap();
+    assert_eq!(crate::formatter::rustfmt_call_count(), 2);
+}

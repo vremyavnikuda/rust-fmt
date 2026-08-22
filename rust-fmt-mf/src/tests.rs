@@ -592,3 +592,49 @@ fn accepted_batch_result_falls_back_on_error() {
     let result = super::accepted_batch_result(original, Err(anyhow::anyhow!("boom")));
     assert_eq!(result, None);
 }
+
+#[test]
+fn formatting_many_independent_macros_uses_few_rustfmt_calls() {
+    let _guard = COUNTER_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let source = r#"macro_rules! one {
+    ($x:expr) => {
+        $x + 1
+    };
+}
+
+macro_rules! two {
+    ($x:expr) => {
+        $x + 2
+    };
+}
+
+macro_rules! three {
+    ($x:expr) => {
+        $x + 3
+    };
+}
+
+macro_rules! four {
+    ($x:expr) => {
+        $x + 4
+    };
+}
+
+macro_rules! five {
+    ($x:expr) => {
+        $x + 5
+    };
+}
+"#;
+    crate::formatter::reset_rustfmt_call_count();
+    let _ = super::format_source(source, "rustfmt", "2021", None).unwrap();
+    let calls = crate::formatter::rustfmt_call_count();
+    // Today this needs one rustfmt call per definition per convergence pass
+    // (5 definitions x >=2 passes = 10+). Batched, it should need roughly
+    // one shadow call plus one final-pass call per convergence pass. This
+    // must NOT scale with the number of definitions.
+    assert!(
+        calls <= 4,
+        "expected batched formatting of 5 independent macros to use at most 4 rustfmt calls, used {calls}"
+    );
+}

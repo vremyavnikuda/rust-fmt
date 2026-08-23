@@ -4,20 +4,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.1.10 - 2026-08-23
 
 ### Fixed
+
 - Formatting a file with CRLF line endings and at least one `//` comment failed closed (`SKIPPED` or a hard error) instead of formatting, because `rustfmt` and this crate's own shadow-file processing silently drop `\r` on output while the safety oracle correctly detects the resulting change to a comment's literal text. `format_source`/`format_source_with_report` now detect CRLF input, normalize to `\n` for every internal pass, and restore `\r\n` (remapping reported macro spans accordingly) in the final output. LF-only input is unaffected.
 - Added `.gitattributes` forcing LF line endings for all tracked text files, so checking out this repository on a Windows machine with the common `core.autocrlf=true` default no longer turns committed `.rs` fixtures into CRLF in the first place.
 
 ## 0.1.9 - 2026-08-23
 
 ### Changed
+
 - Macro definitions in the same file are now formatted in one combined `rustfmt` call per convergence pass instead of one call per definition, falling back to the previous per-definition behavior only if the batch fails the token-preservation check. Measured on a 21-macro fixture using `rustfmt_call_count()` (successful `Command::spawn()` calls in-process, not `execve` events — a naive `strace -f -e trace=execve` count double-counts every call because each `rustfmt` invocation on this rustup setup execs twice, through the `~/.cargo/bin/rustfmt` shim and then the real toolchain binary): `rustfmt` subprocess spawns dropped from 47 to 27, wall-clock time from ~1.0s to ~0.62s.
 
 ## 0.1.8 - 2026-08-22
 
 ### Added
+
 - Explicit per-macro formatting outcomes: `FORMATTED`, `UNCHANGED`, and `SKIPPED` with a reason and source range. Diagnostics are written to stderr while stdout remains valid formatted Rust.
 - A safety oracle that verifies exact significant-token preservation, complete-file Rust syntax, and byte-identical output on a second formatting pass.
 - Automatic discovery and auditing of every golden fixture and every Rust source file under `test-rs/src`, including exact comparison of the four real macro corpus files with their user-approved outputs.
@@ -28,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI validation of the native formatter on `macos-latest`, `macos-13`, and `ubuntu-24.04-arm` runners, in addition to the existing Linux x64 and Windows x64 coverage.
 
 ### Changed
+
 - Replaced byte-level `macro_rules!` discovery with `ra-ap-rustc_lexer`, exact UTF-8 byte ranges, and typed matching for `()`, `[]`, and `{}` delimiters.
 - Native formatting now processes macro definitions independently. Unsupported or lossy transformations preserve the original macro and report `SKIPPED` instead of returning partially rewritten code.
 - Macro matchers, transcribers, generated `macro_rules!` definitions, and custom macro invocations now use token-aware spacing and delimiter handling instead of raw string replacements.
@@ -45,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Corpus files without an approved macro golden must now match an independent rustfmt pass exactly; syntax-only success can no longer be reported as correct formatting.
 
 ### Fixed
+
 - False detection of `macro_rules!` inside strings and comments, and premature delimiter closure caused by character literals or comments containing braces and parentheses.
 - UTF-8 corruption when formatting Unicode identifiers and comments.
 - Matcher corruption when collapsing a newline after a `//` comment.
@@ -77,11 +82,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## 0.1.7 - 2026-06-22
 
 ### Fixed
+
 - Raw string closing delimiter order in parser: was `#"` (hash-then-quote) instead of `"#` (quote-then-hash), causing unterminated raw strings that swallowed subsequent macro definitions.
 - Off-by-one in parser brace matching when a string escape `\\` is at the last byte of a macro body.
 - Empty arm bodies now parse correctly (zero-length body extraction).
 
 ### Changed
+
 - Rewrote `normalize_body_indent` — replaced heuristic min_indent/has_closer approach with a state machine that tracks structural depth (`{`/`}`, `$(`/`)+` repetition, `where` clauses). Normalization now runs before `$()` replacement so the original macro syntax is visible to the depth tracker. Fixes indentation for macros with where clauses, nested repetitions, inline braces, and multi-level `$()` nesting.
 - Rewrote shadow file builder (`build_shadow_file_from_strings`) to preserve relative indentation via min-indent stripping instead of adding a uniform 4-space indent.
 - Added single-line arm body extraction in `split_shadow_into_arms` for arms with `() => { BODY };` on one line.
@@ -91,26 +98,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## 0.1.6 - 2026-06-10
 
 ### Added
+
 - Full cross-platform support: native macro formatter binaries for Linux (`linux-x64`) and macOS (`darwin-x64`, `darwin-arm64`) in addition to Windows.
 
 ## 0.1.5 - 2026-06-09
 
 ### Added
+
 - Native macro formatter (`rust-fmt-mf`) for formatting `macro_rules!` bodies.
 - New `nativeMacroFormatter.native` and `nativeMacroFormatter.path` settings to enable and configure native macro formatting.
 
 ### Fixed
+
 - Incorrect body indentation in `struct_with_bounds!` macros.
 - Extra spaces before colon in `$()` repetition patterns.
 
 ## 0.1.4 - 2026-05-31
 
 ### Changed
+
 - Updated workspace format shortcut to `Ctrl+Alt+Shift+F` / `Cmd+Option+Shift+F` and clarified command naming.
 - Parallel filesystem searches in context resolution for faster formatting.
 - Context cache with mtime-based invalidation reduces repeated filesystem lookups during format-on-save.
 
 ### Added
+
 - New Git-based formatting commands: `Format Changed Rust Files` and `Format Staged Rust Files`.
 - New Control Center and Logs commands accessible via Command Palette.
 - New `rustfmt.onboarding.mode` setting (`quiet` / `guided`) for default formatter prompts.
@@ -120,22 +132,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## 0.1.3 - 2026-02-06
 
 ### Added
+
 - Quick command to set rust-fmt as the default formatter, with Global or Workspace scope selection.
 - Smart prompt when Rust is not using rust-fmt as the default formatter.
 
 ### Changed
+
 - Workspace formatting is now faster on large projects.
 
------
+---
+
 ## 0.1.2 - 2026-01-28
 
 ### Added
+
 - Temporary workspace formatting cache for resolved Rust context (crate root, config, toolchain) to reduce repeated filesystem lookups.
 
------
+---
+
 ## 0.1.1 - 2026-01-26
 
 ### Added
+
 - Workspace formatting command `rust-fmt.formatWorkspace` and `Shift+Alt+F`/`Shift+Option+F` binding for Rust files.
 - Status bar indicator ("rust-fmt: active") with quick access to workspace formatting.
 - Cancellation support and protection against parallel formatting runs per file.

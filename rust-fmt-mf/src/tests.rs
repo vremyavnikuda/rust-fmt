@@ -851,5 +851,8 @@ fn lf_only_input_is_completely_unaffected_by_crlf_handling() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let source = "//! doc comment\nmacro_rules! one {\n    ($x:expr) => { $x + 1 };\n}\n\npub fn use_one() {\n    one!(1);\n}\n";
     let result = super::format_source(source, "rustfmt", "2021", None).unwrap();
-    assert!(!result.contains('\r'), "LF-only input must never gain a CR: {result:?}");
+    assert!(
+        !result.contains('\r'),
+        "LF-only input must never gain a CR: {result:?}"
+    );
 }

@@ -1,6 +1,6 @@
 macro_rules! token_tree_macro {
-    ($($tt:tt)* ) => {
-            vec![ $( stringify!($tt) ),* ]
+    ($($tt:tt)*) => {
+        vec![$(stringify!($tt)),*]
     };
 }
 
@@ -14,6 +14,10 @@ macro_rules! tt_recurse {
 }
 
 macro_rules! count_exprs {
-    () => { 0usize };
-    ( $head:expr $(, $tail:expr )* ) => { 1usize + count_exprs!( $( $tail ),* ) };
+    () => {
+        0usize
+    };
+    ($head:expr $(, $tail:expr)*) => {
+        1usize + count_exprs!($($tail),*)
+    };
 }

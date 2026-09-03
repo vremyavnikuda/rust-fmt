@@ -125,7 +125,6 @@ fn real_macro_heavy_matches_user_golden() {
     let input = include_str!("fixtures/real_macro_heavy.rs");
     let expected = include_str!("fixtures/real_macro_heavy.expected");
     let actual = rust_fmt_mf::format_source(input, "rustfmt", "2021", None).unwrap();
-
     assert_tokens_preserved(input, &actual);
     assert_eq!(actual, expected);
 }
@@ -135,7 +134,6 @@ fn real_macro_edge_cases_match_golden() {
     let input = include_str!("fixtures/real_macro_edge_cases.rs");
     let expected = include_str!("fixtures/real_macro_edge_cases.expected");
     let actual = rust_fmt_mf::format_source(input, "rustfmt", "2021", None).unwrap();
-
     assert_tokens_preserved(input, &actual);
     assert_eq!(actual, expected);
 }
@@ -145,7 +143,6 @@ fn real_macro_missing_cases_match_golden() {
     let input = include_str!("fixtures/real_macro_missing_cases.rs");
     let expected = include_str!("fixtures/real_macro_missing_cases.expected");
     let actual = rust_fmt_mf::format_source(input, "rustfmt", "2021", None).unwrap();
-
     assert_only_commas_added(input, &actual);
     assert_eq!(actual, expected);
 }
@@ -180,9 +177,7 @@ fn main() {
     });
 }
 "#;
-
     let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
-
     assert_tokens_preserved(source, &actual);
     assert_eq!(actual, expected);
 }
@@ -215,9 +210,7 @@ fn main() {
     println!("{}", value);
 }
 "#;
-
     let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
-
     assert_tokens_preserved(source, &actual);
     assert_eq!(actual, expected);
 }
@@ -238,9 +231,7 @@ fn statement_repetitions_use_block_indentation() {
     };
 }
 "#;
-
     let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
-
     assert_tokens_preserved(source, &actual);
     assert_eq!(actual, expected);
 }
@@ -263,9 +254,7 @@ fn line_comment_expands_a_compact_matcher() {
     };
 }
 "#;
-
     let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
-
     assert_tokens_preserved(source, &actual);
     assert_eq!(actual, expected);
 }
@@ -286,9 +275,7 @@ fn generated_enum_body_expands_from_one_line() {
     };
 }
 "#;
-
     let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
-
     assert_tokens_preserved(source, &actual);
     assert_eq!(actual, expected);
 }
@@ -312,9 +299,7 @@ fn generated_struct_where_clause_is_whitespace_independent() {
     };
 }
 "#;
-
     let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
-
     assert_tokens_preserved(source, &actual);
     assert_eq!(actual, expected);
 }
@@ -342,9 +327,7 @@ fn partially_expanded_generated_struct_close_brace_is_repaired() {
     };
 }
 "#;
-
     let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
-
     assert_eq!(actual, expected);
     assert_tokens_preserved(source, &actual);
 }
@@ -373,9 +356,7 @@ fn generated_impl_expands_inline_method_body() {
     };
 }
 "#;
-
     let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
-
     assert_tokens_preserved(source, &actual);
     assert_eq!(actual, expected);
 }
@@ -405,9 +386,7 @@ fn partially_expanded_generated_impl_is_repaired() {
     };
 }
 "#;
-
     let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
-
     assert_eq!(actual, expected);
     assert_tokens_preserved(source, &actual);
 }
@@ -436,9 +415,7 @@ fn optional_generated_fields_use_nested_indentation() {
     };
 }
 "#;
-
     let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
-
     assert_tokens_preserved(source, &actual);
     assert_eq!(actual, expected);
 }
@@ -462,9 +439,7 @@ fn generated_where_clause_ignores_const_expression_braces() {
     };
 }
 "#;
-
     let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
-
     assert_tokens_preserved(source, &actual);
     assert_eq!(actual, expected);
 }
@@ -474,7 +449,6 @@ fn real_main_fmt_matches_golden() {
     let input = include_str!("fixtures/real_main_fmt.rs");
     let expected = include_str!("fixtures/real_main_fmt.expected");
     let actual = rust_fmt_mf::format_source(input, "rustfmt", "2021", None).unwrap();
-
     assert_tokens_preserved(input, &actual);
     assert_eq!(actual, expected);
 }
@@ -483,7 +457,6 @@ fn real_main_fmt_matches_golden() {
 fn canonical_macro_body_is_not_degraded() {
     let source = "macro_rules! m {\n    ($fmt:expr, $($arg:expr),+ $(,)?) => {\n        format!($fmt, $($arg),+)\n    };\n}\n";
     let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
-
     assert_eq!(actual, source);
 }
 
@@ -710,9 +683,7 @@ pass_item! {
     }
 }
 "#;
-
     let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
-
     assert_eq!(actual, expected);
     assert_only_commas_added(source, &actual);
 }
@@ -735,9 +706,7 @@ fn nested_generated_macro_rules_is_indented_in_one_public_call() {
     };
 }
 "#;
-
     let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
-
     assert_eq!(actual, expected);
 }
 
@@ -750,9 +719,7 @@ fn long_macro_matcher_is_wrapped_below_the_style_width() {
     };
 }
 "#;
-
     let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
-
     assert!(actual.contains("macro_rules! huge {\n    (\n"), "{actual}");
     assert!(
         actual.lines().all(|line| line.chars().count() <= 100),
@@ -783,11 +750,12 @@ fn main() {
         1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
         26, 27, 28, 29, 30
     );"#;
-
     let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
-
     assert!(actual.contains(expected_call), "{actual}");
-    assert!(actual.lines().all(|line| line.chars().count() <= 100), "{actual}");
+    assert!(
+        actual.lines().all(|line| line.chars().count() <= 100),
+        "{actual}"
+    );
     assert_tokens_preserved(source, &actual);
 }
 
@@ -805,9 +773,7 @@ field_accessor!(DataFields, name: String, age: u32, email: String, active: bool)
     let expected_call = r#"field_accessor!(
     DataFields, name: String, age: u32, email: String, active: bool
 );"#;
-
     let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
-
     assert!(actual.contains(expected_call), "{actual}");
     assert!(actual.lines().all(|line| line.chars().count() <= 100));
     assert_tokens_preserved(source, &actual);
@@ -825,11 +791,10 @@ fn dense_but_short_method_chain_stays_on_one_line() {
     println!("sum = {}", sum);
 }
 "#;
-
     let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
-
     assert!(
-        actual.contains("    let sum: i32 = v.iter().map(|x| x * 2).filter(|x| x % 3 == 0).sum();\n"),
+        actual
+            .contains("    let sum: i32 = v.iter().map(|x| x * 2).filter(|x| x % 3 == 0).sum();\n"),
         "{actual}"
     );
 }
@@ -869,9 +834,7 @@ fn layout_normalization_separates_items_but_not_list_entries() {
     }
 }
 "#;
-
     let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
-
     assert_eq!(actual, expected);
     assert_tokens_preserved(source, &actual);
 }
@@ -880,9 +843,7 @@ fn layout_normalization_separates_items_but_not_list_entries() {
 fn consecutive_module_declarations_stay_compact() {
     let source = "pub mod first;\n\npub mod second;\n\nmod third;\n";
     let expected = "pub mod first;\npub mod second;\nmod third;\n";
-
     let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
-
     assert_eq!(actual, expected);
 }
 
@@ -896,9 +857,7 @@ fn default_style_wraps_long_signatures_and_dense_method_chains() {
 
 pub fn chain(values: &[i32]) -> i32 { values.iter().map(|value| value * 2).filter(|value| value % 3 == 0).sum() }
 "#;
-
     let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
-
     assert!(actual.contains("pub fn long_signature(\n"), "{actual}");
     assert!(
         actual.contains("values\n        .iter()\n        .map("),
@@ -918,9 +877,7 @@ pub fn sort(items: &mut [f64]) {
     items.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 }
 "#;
-
     let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
-
     assert!(
         actual.contains(
             "pub fn long_signature(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32) -> i32 {\n"
@@ -928,7 +885,9 @@ pub fn sort(items: &mut [f64]) {
         "{actual}"
     );
     assert!(
-        actual.contains("items.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));\n"),
+        actual.contains(
+            "items.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));\n"
+        ),
         "{actual}"
     );
     assert_only_commas_added(source, &actual);
@@ -940,9 +899,7 @@ fn narrow_style_accepts_rustfmt_closure_block_braces() {
     items.sort_by(|first_value, second_value| first_value.partial_cmp(second_value).unwrap_or(std::cmp::Ordering::Equal));
 }
 "#;
-
     let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
-
     assert!(
         actual.contains("items.sort_by(|first_value, second_value| {\n"),
         "{actual}"

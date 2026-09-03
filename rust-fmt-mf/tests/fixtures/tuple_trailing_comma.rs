@@ -1,3 +1,5 @@
-macro_rules! one_tuple {()=>{(
-1,
-) };}
+macro_rules! one_tuple {
+    () => {
+        (1,)
+    };
+}

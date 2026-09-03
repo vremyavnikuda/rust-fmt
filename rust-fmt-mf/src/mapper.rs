@@ -341,8 +341,17 @@ fn canonical_token_spacing_impl(source: &str, fragment_colons: bool) -> String {
         let previous_at_binding =
             previous == Some("@") && index >= 2 && is_fragment_specifier(&tokens, index - 2);
         let marker_argument = current == "(" && before_previous == Some("@");
+        // A `!` glues to the name before it only when it is a macro bang
+        // (`vec![..]`, `foo!(..)`), never when it opens `!=` or a unary `!`.
+        let macro_bang = current == "!"
+            && index > 0
+            && matches!(tokens[index - 1].kind.as_str(), "Ident" | "RawIdent")
+            && tokens
+                .get(index + 1)
+                .is_some_and(|token| matches!(token.text.as_str(), "(" | "[" | "{"));
         let no_space = index == 0
-            || matches!(current, ")" | "]" | "," | ";" | ":" | "." | "!" | "?")
+            || macro_bang
+            || matches!(current, ")" | "]" | "," | ";" | ":" | "." | "?")
             || current == "@" && !at_binding
             || matches!(previous, Some("(" | "[" | "$" | "#" | "." | "!"))
             || previous == Some("@") && !previous_at_binding
@@ -525,9 +534,60 @@ fn format_body_spacing(source: &str) -> String {
             lines.push(format!("{}{}", " ".repeat(indent), formatted));
         }
     }
-    let split = split_partially_expanded_items(&lines.join("\n"));
+    let balanced = split_unbalanced_braces(&lines.join("\n"));
+    let split = split_partially_expanded_items(&balanced);
     let expanded = expand_generated_where_clauses(&expand_inline_structs(&split));
     add_multiline_struct_trailing_commas(&expanded)
+}
+
+/// Break lines whose braces do not balance within the line: content trailing an
+/// opening brace moves down a line, and a closing brace that belongs to a brace
+/// opened on an earlier line gets a line of its own. The passes that run after
+/// this one repair the indentation.
+fn split_unbalanced_braces(source: &str) -> String {
+    let mut output = Vec::new();
+    for line in source.lines() {
+        let indent = line.len() - line.trim_start().len();
+        push_brace_split_line(line.trim(), indent, &mut output);
+    }
+    output.join("\n")
+}
+
+fn push_brace_split_line(trimmed: &str, indent: usize, output: &mut Vec<String>) {
+    let tokens = crate::parser::significant_tokens(trimmed).unwrap_or_default();
+    if tokens.is_empty() || contains_comment(trimmed) {
+        output.push(format!("{}{}", " ".repeat(indent), trimmed));
+        return;
+    }
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate() {
+        match token.text.as_str() {
+            "{" if matching_text_delimiter(&tokens, index).is_none()
+                && index + 1 < tokens.len() =>
+            {
+                output.push(format!(
+                    "{}{}",
+                    " ".repeat(indent),
+                    canonical_token_spacing(&trimmed[..token.span.end])
+                ));
+                push_brace_split_line(trimmed[token.span.end..].trim(), indent + 4, output);
+                return;
+            }
+            "{" => depth += 1,
+            "}" if depth == 0 && index > 0 => {
+                output.push(format!(
+                    "{}{}",
+                    " ".repeat(indent),
+                    canonical_token_spacing(&trimmed[..token.span.start])
+                ));
+                push_brace_split_line(trimmed[token.span.start..].trim(), indent, output);
+                return;
+            }
+            "}" => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    output.push(format!("{}{}", " ".repeat(indent), trimmed));
 }
 
 fn split_partially_expanded_items(source: &str) -> String {
@@ -815,12 +875,16 @@ fn expand_generated_where_clauses(source: &str) -> String {
         let item = tokens
             .iter()
             .position(|token| matches!(token.text.as_str(), "struct" | "enum" | "union"));
-        let where_token = item.and_then(|item| {
-            tokens[item + 1..]
-                .iter()
-                .position(|token| token.text == "where")
-                .map(|position| item + 1 + position)
-        });
+        let where_token = item
+            .and_then(|item| {
+                tokens[item + 1..]
+                    .iter()
+                    .position(|token| token.text == "where")
+                    .map(|position| item + 1 + position)
+            })
+            // A `where` that already sits on its own line still has to give up
+            // whatever the unformatted source left trailing behind it.
+            .or_else(|| (tokens.len() > 1 && tokens[0].text == "where").then_some(0));
 
         if let Some(where_token) = where_token {
             let where_start = tokens[where_token].span.start;

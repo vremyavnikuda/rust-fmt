@@ -19,7 +19,6 @@ fn rust_files(root: &Path) -> Result<Vec<PathBuf>> {
         }
         Ok(())
     }
-
     let mut files = Vec::new();
     visit(root, &mut files)?;
     files.sort();
@@ -56,14 +55,12 @@ fn unformat(source: &str) -> Result<String> {
     let mut output = String::with_capacity(source.len() * 2);
     let mut offset = 0usize;
     let mut changed_lines = 0usize;
-
     for segment in source.split_inclusive('\n') {
         let (line, newline) = segment
             .strip_suffix('\n')
             .map_or((segment, ""), |line| (line, "\n"));
         let trimmed = line.trim_start_matches([' ', '\t']);
         let can_change = !trimmed.is_empty() && !protected.contains(&offset);
-
         if can_change {
             output.push_str(&" ".repeat(widths[changed_lines % widths.len()]));
             output.push_str(trimmed);
@@ -72,7 +69,6 @@ fn unformat(source: &str) -> Result<String> {
             output.push_str(line);
         }
         output.push_str(newline);
-
         if can_change
             && !newline.is_empty()
             && offset + segment.len() < source.len()
@@ -83,12 +79,10 @@ fn unformat(source: &str) -> Result<String> {
         }
         offset += segment.len();
     }
-
     ensure!(changed_lines > 0, "source contains no lines to unformat");
-    ensure!(source != output, "unformatter did not change the source");
+    ensure!(source!= output, "unformatter did not change the source");
     ensure!(
-        token_signature(source)? == token_signature(&output)?,
-        "unformatter changed Rust tokens"
+        token_signature(source)? == token_signature(&output)?, "unformatter changed Rust tokens"
     );
     Ok(output)
 }
@@ -97,11 +91,7 @@ fn main() -> Result<()> {
     let mut arguments = env::args_os().skip(1);
     let source_root = PathBuf::from(arguments.next().context("missing source directory")?);
     let target_root = PathBuf::from(arguments.next().context("missing target directory")?);
-    ensure!(
-        arguments.next().is_none(),
-        "expected: <source-dir> <target-dir>"
-    );
-
+    ensure!(arguments.next().is_none(), "expected: <source-dir> <target-dir>");
     let files = rust_files(&source_root)?;
     ensure!(!files.is_empty(), "no Rust files found");
     for source_path in files {

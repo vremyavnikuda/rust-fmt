@@ -1,6 +1,10 @@
 macro_rules! tt_based_dispatch {
     (bool $val:expr) => {
-        if $val { "true" } else { "false" }
+        if $val {
+            "true"
+        } else {
+            "false"
+        }
     };
     (int $val:expr) => {
         format!("{}", $val)

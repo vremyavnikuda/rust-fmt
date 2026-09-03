@@ -1,5 +1,5 @@
 macro_rules! triple {
-    ( $( $x:expr ; $( $y:expr : $( $z:expr )* )+ ),* ) => {
-        ( $( $( ( $y , $( $z )* ) )+ ),* )
+    ($($x:expr; $($y:expr: $($z:expr)*)+),*) => {
+        ($($(($y, $($z)*))+),*)
     };
 }

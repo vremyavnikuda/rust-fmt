@@ -1,8 +1,10 @@
 macro_rules! try_chain {
-    ($base:expr, $( $method:ident ),*) => {
+    ($base:expr, $($method:ident),*) => {
         {
             let mut x = $base;
-            $( x = x . $method () ? ; )*
+            $(
+                x = x.$method()?;
+            )*
             Ok(x)
         }
     };

@@ -1326,7 +1326,11 @@ pub fn format_source(
 /// that had `\r\n` at every one of those newlines. Each `\n` at or before
 /// an offset accounts for one extra `\r` byte inserted before it.
 fn remap_lf_span_to_crlf(span: std::ops::Range<usize>, lf_text: &str) -> std::ops::Range<usize> {
-    let start = span.start + lf_text[..span.start].bytes().filter(|&b| b == b'\n').count();
+    let start = span.start
+        + lf_text[..span.start]
+            .bytes()
+            .filter(|&b| b == b'\n')
+            .count();
     let end = span.end + lf_text[..span.end].bytes().filter(|&b| b == b'\n').count();
     start..end
 }

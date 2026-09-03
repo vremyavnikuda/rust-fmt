@@ -1,6 +1,6 @@
 [package]
 name = "rust-fmt-mf"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 description = "Native macro_rules! body formatter for rust-fmt VS Code extension"
 

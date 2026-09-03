@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.11
+
+### Added
+
+- `rust-fmt: Check Formatting` command, also reachable from the Control Center. It formats every file in the chosen scope (workspace, `git diff` working tree, or `git diff --cached`) in memory without writing anything, and reports each file that would change as warnings in the Problems panel — one entry per contiguous block of lines that differ, so the markers point at the actual regions instead of at the file as a whole. Equivalent to `cargo fmt --check`, except that it accounts for `macro_rules!` bodies, which `cargo fmt` leaves alone.
+- Vim and Neovim support, with no plugin required: `rust-fmt-mf` is a stdin-to-stdout filter, which is exactly what `formatprg` and conform.nvim expect from an external formatter. README now carries copy-paste configuration for both. `rustfmt.toml` and `rust-toolchain.toml` need no flags — `rustfmt` finds its own config by walking up from the working directory, and the `rustup` shim resolves a pinned toolchain the same way; only the edition has to be named in the editor config, since the formatter reads from stdin and never learns the file's path, and a mismatch fails with a `rustfmt` parse error rather than producing wrong output.
+- A release workflow that publishes the native formatter for `linux-x64`, `linux-arm64`, `win32-x64`, `darwin-x64`, and `darwin-arm64` to a GitHub Release on every `v*` tag. CI already built all five and threw them away, so the only way to obtain the binary outside the VS Code extension was `cargo install --git https://github.com/vremyavnikuda/rust-fmt rust-fmt-mf`, which needs a Rust toolchain.
+- Visible reporting when the native macro formatter gives up. `formatWithNativeMacroFormatter` now returns a typed outcome (`missing-binary`, `canceled`, `timeout`, `spawn-error`, `exit-code`) instead of a bare `null`, so the extension can tell an ordinary cancellation apart from a real failure. Anything but a cancellation switches the status bar to `rust-fmt: macros skipped` with the reason in its tooltip, writes the reason to the output channel, and shows one notification per reason per session. The fallback to plain `rustfmt` is unchanged — previously it happened silently and a file with unformatted macro bodies looked like a successful format.
+
+### Fixed
+
+- A space before `!=` was deleted inside the arguments of a user-defined macro invocation: `ensure!(source != output, ...)` became `ensure!(source!= output, ...)`. `canonical_token_spacing` treated every `!` as a macro bang and glued it to the preceding token. A `!` is now joined to the name before it only when it is followed by `(`, `[`, or `{`, leaving `!=` and unary `!` alone.
+- Generated items inside a macro body were left partly collapsed when the unformatted source put an item's opening brace and its contents on one line, or trailed a closing brace behind other tokens. `pub struct $name<$lt> { pub value: &$lt $ty,` kept its field on the header line, and `fn $method(...) -> $ret { unimplemented!() } }` kept both closing braces there. A pass now breaks any line whose braces do not balance within it, and the existing repair passes fix the indentation from there.
+- A `where` clause sitting on its own line kept whatever bounds the unformatted source had left trailing after it. `expand_generated_where_clauses` only recognised a `where` that shared a line with its `struct`, `enum`, or `union`.
+- Together these three restore the `test-rs` corpus exactly — 1800 lines, nothing left unformatted — from a scrambled state, verified across several scrambling seeds.
+
 ## 0.1.10 - 2026-08-23
 
 ### Fixed

@@ -5,15 +5,14 @@ Only whitespace is touched - indentation, spaces around punctuation, and where
 lines break - so the code still compiles and a correct formatter must restore
 the committed version exactly:
 
-    python scripts/unformat_test_rs.py               # default seed
-    python scripts/unformat_test_rs.py --seed 42     # a different mangling
+    python scripts/unformat_test_rs.py       # default seed
+    python scripts/unformat_test_rs.py 42    # a different mangling
     # format in VS Code / with rust-fmt-mf, then:
     git diff --stat test-rs        # should be empty
 
 Restore without formatting: git checkout -- test-rs
 """
 
-import argparse
 import random
 import re
 import sys
@@ -22,13 +21,13 @@ from pathlib import Path
 INDENTS = ["", " ", "  ", "    ", "\t", "\t\t", "\t    ", "        ", "           "]
 # ponytail: line-level heuristics instead of a lexer; blank lines are never
 # touched because rustfmt preserves them, so they keep the diff an exact oracle.
-UNSAFE = ('"', "'", "//", "/*", "*/")
+UNSAFE = re.compile(r"""["']|//|/\*|\*/""")
 SQUEEZE = re.compile(r"\s*([=<>,;:+&|(){}\[\]-])\s*")
 SPLIT_AT = re.compile(r"(?<=,) ")
 
 
 def safe(line: str) -> bool:
-    return not any(token in line for token in UNSAFE)
+    return UNSAFE.search(line) is None
 
 
 def squeeze(lines: list[str], rng: random.Random) -> list[str]:
@@ -69,16 +68,9 @@ def indent(lines: list[str], rng: random.Random) -> list[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Mangle whitespace in test-rs")
-    parser.add_argument(
-        "--seed",
-        type=lambda value: int(value, 0),
-        default=0xC0FFEE,
-        help="mangling seed, decimal or 0x-prefixed (default: 0xC0FFEE)",
-    )
-    args = parser.parse_args()
+    seed = int(sys.argv[1], 0) if len(sys.argv) > 1 else 0xC0FFEE
     root = Path(__file__).resolve().parent.parent / "test-rs" / "src"
-    rng = random.Random(args.seed)
+    rng = random.Random(seed)
     files = sorted(root.rglob("*.rs"))
     if not files:
         print(f"No .rs files under {root}", file=sys.stderr)
@@ -89,7 +81,6 @@ def main() -> int:
             lines = step(lines, rng)
         path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
         print(f"mangled {path.relative_to(root.parent)}")
-    print(f"seed {args.seed:#x}")
     return 0
 
 

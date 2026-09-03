@@ -104,6 +104,10 @@
         "title": "Format Workspace with rustfmt"
       },
       {
+        "command": "rust-fmt.checkFormatting",
+        "title": "rust-fmt: Check Formatting"
+      },
+      {
         "command": "rust-fmt.formatChanged",
         "title": "Format Changed Rust Files"
       },

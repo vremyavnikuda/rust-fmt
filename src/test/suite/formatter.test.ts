@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { RustFormatter, FormatterConfig, normalizeMacroSpacing, normalizeMacroBodies, getNativeMacroFormatterPath, formatWithNativeMacroFormatter, sha256File } from '../../formatter';
+import { changedLineBlocks } from '../../checkFormatting';
 
 const TEST_CONFIG: FormatterConfig = {
     rustfmtPath: 'rustfmt',
@@ -388,11 +389,11 @@ suite('RustFormatter', () => {
             };
             const context = { cwd: undefined };
             const result = await formatWithNativeMacroFormatter('fn main() {}', config, context);
-            assert.ok(result, 'should return formatted output');
-            assert.ok(result!.includes('fn main()'), `expected formatted fn main, got: ${JSON.stringify(result)}`);
+            assert.ok(result.ok, `should return formatted output, got: ${JSON.stringify(result)}`);
+            assert.ok(result.ok && result.text.includes('fn main()'), `expected formatted fn main, got: ${JSON.stringify(result)}`);
         });
 
-        test('returns null on cancellation', async () => {
+        test('reports cancellation instead of a bare failure', async () => {
             const config: FormatterConfig = {
                 rustfmtPath: 'rustfmt',
                 extraArgs: [],
@@ -403,7 +404,16 @@ suite('RustFormatter', () => {
             source.cancel();
             const context = { cwd: undefined };
             const result = await formatWithNativeMacroFormatter('fn main() {}', config, context, source.token);
-            assert.strictEqual(result, null);
+            assert.deepStrictEqual(result, { ok: false, reason: 'canceled' });
+        });
+
+        test('reports a missing binary distinctly from cancellation', async () => {
+            const config: FormatterConfig = {
+                rustfmtPath: 'rustfmt',
+                extraArgs: []
+            };
+            const result = await formatWithNativeMacroFormatter('fn main() {}', config, { cwd: undefined });
+            assert.deepStrictEqual(result, { ok: false, reason: 'missing-binary' });
         });
 
         test('RustFormatter uses native formatting for ordinary Rust files', async () => {
@@ -424,5 +434,31 @@ suite('RustFormatter', () => {
 
             assert.strictEqual(result, 'fn native_main() {}\n');
         });
+    });
+});
+
+suite('changedLineBlocks', () => {
+
+    test('reports nothing for identical text', () => {
+        assert.deepStrictEqual(changedLineBlocks('a\nb\n', 'a\nb\n'), []);
+    });
+
+    test('groups consecutive changed lines into one block', () => {
+        assert.deepStrictEqual(changedLineBlocks('a\nb\nc\nd', 'a\nB\nC\nd'), [[1, 2]]);
+    });
+
+    test('separates blocks that are apart', () => {
+        assert.deepStrictEqual(
+            changedLineBlocks('a\nb\nc\nd\ne', 'A\nb\nc\nd\nE'),
+            [[0, 0], [4, 4]]
+        );
+    });
+
+    test('marks the seam when formatting only inserts lines', () => {
+        assert.deepStrictEqual(changedLineBlocks('a\nb', 'a\nx\nb'), [[1, 1]]);
+    });
+
+    test('reports deleted lines against the original', () => {
+        assert.deepStrictEqual(changedLineBlocks('a\nx\nb', 'a\nb'), [[1, 1]]);
     });
 });

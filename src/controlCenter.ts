@@ -4,6 +4,7 @@ export type ControlCenterActionId =
     | 'runWorkspace'
     | 'runChanged'
     | 'runStaged'
+    | 'checkFormatting'
     | 'setDefault'
     | 'openLogs'
     | 'reloadWorkspace';
@@ -29,6 +30,11 @@ export async function pickControlCenterAction(): Promise<ControlCenterActionId |
             id: 'runStaged',
             label: 'Run: Format Staged Rust Files',
             description: 'Use git diff --cached'
+        },
+        {
+            id: 'checkFormatting',
+            label: 'Check: Formatting',
+            description: 'Report unformatted files without changing them'
         },
         { id: 'setDefault', label: 'Run: Set rust-fmt as Default Formatter' },
         { label: 'Maintenance', kind: vscode.QuickPickItemKind.Separator },

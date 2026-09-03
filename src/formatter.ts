@@ -21,6 +21,21 @@ export interface RustfmtContext {
     toolchain?: string;
 }
 
+export type NativeFailure = 'missing-binary' | 'canceled' | 'timeout' | 'spawn-error' | 'exit-code';
+
+export type NativeResult =
+    | { ok: true; text: string }
+    | { ok: false; reason: NativeFailure; detail?: string };
+
+let nativeFallbackReporter: ((reason: NativeFailure, detail?: string) => void) | undefined;
+
+/// Called when the native macro formatter gives up and rustfmt takes over, so
+/// the user learns that macro bodies were left alone instead of it looking
+/// like a clean format.
+export function onNativeFallback(report: (reason: NativeFailure, detail?: string) => void): void {
+    nativeFallbackReporter = report;
+}
+
 export class RustFormatter {
     private config: FormatterConfig;
     private contextCache = new Map<string, { ctx: RustfmtContext; mtime: number }>();
@@ -110,10 +125,13 @@ export class RustFormatter {
         if (this.config.nativeMacroFormatter) {
             console.log('[rust-fmt] Using native macro formatter');
             const nativeResult = await formatWithNativeMacroFormatter(text, this.config, context, token);
-            if (nativeResult !== null) {
-                return nativeResult;
+            if (nativeResult.ok) {
+                return nativeResult.text;
             }
-            console.log('[rust-fmt] Native macro formatter failed, falling back to rustfmt with original text');
+            console.log(`[rust-fmt] Native macro formatter failed (${nativeResult.reason}), falling back to rustfmt with original text`);
+            if (nativeResult.reason !== 'canceled') {
+                nativeFallbackReporter?.(nativeResult.reason, nativeResult.detail);
+            }
         }
         console.log(`[rust-fmt] Formatting with rustfmt at: ${this.config.rustfmtPath}`);
         return new Promise((resolve) => {
@@ -337,13 +355,13 @@ export async function formatWithNativeMacroFormatter(
     config: FormatterConfig,
     context: RustfmtContext,
     token?: vscode.CancellationToken
-): Promise<string | null> {
+): Promise<NativeResult> {
     const binaryPath = getNativeMacroFormatterPath(config);
     if (!binaryPath) {
-        return null;
+        return { ok: false, reason: 'missing-binary' };
     }
     if (token?.isCancellationRequested) {
-        return null;
+        return { ok: false, reason: 'canceled' };
     }
     await logNativeBinary(binaryPath);
     return new Promise((resolve) => {
@@ -368,9 +386,9 @@ export async function formatWithNativeMacroFormatter(
         const timeoutMs = 30000;
         const cancelSubscription = token?.onCancellationRequested(() => {
             proc.kill();
-            finish(null);
+            finish({ ok: false, reason: 'canceled' });
         });
-        const finish = (result: string | null) => {
+        const finish = (result: NativeResult) => {
             if (settled) return;
             settled = true;
             clearTimeout(timeout);
@@ -379,14 +397,14 @@ export async function formatWithNativeMacroFormatter(
         };
         const timeout = setTimeout(() => {
             proc.kill();
-            finish(null);
+            finish({ ok: false, reason: 'timeout', detail: `no output after ${timeoutMs / 1000}s` });
         }, timeoutMs);
         proc.stdout.on('data', (data) => { stdout += data.toString(); });
         proc.stderr.on('data', (data) => { stderr += data.toString(); });
         proc.on('error', (err) => {
             if (settled) return;
             console.error(`[rust-fmt] Native macro formatter error: ${err.message}`);
-            finish(null);
+            finish({ ok: false, reason: 'spawn-error', detail: err.message });
         });
         proc.on('close', (code) => {
             if (settled) return;
@@ -394,14 +412,18 @@ export async function formatWithNativeMacroFormatter(
                 if (stderr.trim()) {
                     console.log(`[rust-fmt] Native macro formatter diagnostics:\n${stderr.trimEnd()}`);
                 }
-                finish(stdout || null);
+                finish(
+                    stdout
+                        ? { ok: true, text: stdout }
+                        : { ok: false, reason: 'exit-code', detail: 'exited 0 with empty output' }
+                );
             } else {
                 console.error(`[rust-fmt] Native macro formatter exited with code ${code}: ${stderr}`);
-                finish(null);
+                finish({ ok: false, reason: 'exit-code', detail: stderr.trim() || `exit code ${code}` });
             }
         });
         if (token?.isCancellationRequested) {
-            finish(null);
+            finish({ ok: false, reason: 'canceled' });
             return;
         }
         proc.stdin.write(text);

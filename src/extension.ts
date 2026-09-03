@@ -1,6 +1,12 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { RustFormatter, FormatterConfig, RustfmtContext } from './formatter';
+import { RustFormatter, FormatterConfig, RustfmtContext, NativeFailure, onNativeFallback } from './formatter';
+import {
+    CheckScope,
+    RUST_FILE_EXCLUDE,
+    RUST_FILE_INCLUDE,
+    runCheck
+} from './checkFormatting';
 import {
     applyDefaultFormatterSettings,
     DEFAULT_FORMATTER_COMMAND,
@@ -26,6 +32,17 @@ let outputChannel: vscode.OutputChannel | undefined;
 const CONTROL_CENTER_COMMAND = 'rust-fmt.controlCenter';
 const CONFIGURE_BEHAVIOR_COMMAND = 'rust-fmt.configureBehavior';
 const OPEN_LOGS_COMMAND = 'rust-fmt.openLogs';
+const CHECK_FORMATTING_COMMAND = 'rust-fmt.checkFormatting';
+let diagnostics: vscode.DiagnosticCollection;
+let nativeFallbackReason: NativeFailure | undefined;
+const reportedFallbacks = new Set<NativeFailure>();
+const NATIVE_FAILURE_TEXT: Record<NativeFailure, string> = {
+    'missing-binary': 'native macro formatter binary not found',
+    'canceled': 'canceled',
+    'timeout': 'native macro formatter timed out',
+    'spawn-error': 'native macro formatter could not start',
+    'exit-code': 'native macro formatter failed'
+};
 const MACRO_PROMPT_SUPPRESS_KEY = 'rustfmt.macroPromptSuppressed';
 let extContext: vscode.ExtensionContext;
 let macroPromptInProgress = false;
@@ -34,6 +51,8 @@ export function activate(context: vscode.ExtensionContext): void {
     extContext = context;
     console.log('[rust-fmt] Extension activated');
     outputChannel = vscode.window.createOutputChannel('rust-fmt');
+    diagnostics = vscode.languages.createDiagnosticCollection('rust-fmt');
+    onNativeFallback(reportNativeFallback);
     writeLog('Extension activated');
     initializeDefaultFormatterPromptState(context);
     const config = getFormatterConfig(vscode.window.activeTextEditor?.document.uri);
@@ -112,9 +131,7 @@ export function activate(context: vscode.ExtensionContext): void {
             vscode.window.showWarningMessage('No workspace folder open');
             return;
         }
-        const include = '**/*.rs';
-        const exclude = '{**/target/**,**/.git/**,**/node_modules/**,**/out/**}';
-        const uris = await vscode.workspace.findFiles(include, exclude);
+        const uris = await vscode.workspace.findFiles(RUST_FILE_INCLUDE, RUST_FILE_EXCLUDE);
         if (uris.length === 0) {
             vscode.window.showInformationMessage('No Rust files found in workspace');
             return;
@@ -256,6 +273,43 @@ export function activate(context: vscode.ExtensionContext): void {
         outputChannel?.show(true);
     });
 
+    const checkFormattingCommand = vscode.commands.registerCommand(CHECK_FORMATTING_COMMAND, async () => {
+        const scope = await pickCheckScope();
+        if (!scope) {
+            return;
+        }
+        await vscode.window.withProgress(
+            {
+                location: vscode.ProgressLocation.Notification,
+                title: 'rust-fmt: Checking formatting',
+                cancellable: true
+            },
+            async (progress, token) => {
+                const summary = await runCheck(scope, formatter, diagnostics, progress, token);
+                writeLog(`Check (${scope}): ${summary.unformatted} of ${summary.total} files not formatted`);
+                if (summary.canceled) {
+                    vscode.window.showInformationMessage('Formatting check canceled.');
+                    return;
+                }
+                if (summary.total === 0) {
+                    vscode.window.showInformationMessage('No Rust files to check.');
+                    return;
+                }
+                if (summary.unformatted === 0) {
+                    vscode.window.showInformationMessage(`All ${summary.total} Rust files are formatted.`);
+                    return;
+                }
+                const choice = await vscode.window.showWarningMessage(
+                    `${summary.unformatted} of ${summary.total} Rust files are not formatted.`,
+                    'Show Problems'
+                );
+                if (choice === 'Show Problems') {
+                    await vscode.commands.executeCommand('workbench.actions.view.problems');
+                }
+            }
+        );
+    });
+
     const formatChangedCommand = vscode.commands.registerCommand('rust-fmt.formatChanged', async () => {
         await formatGitSelection('working');
     });
@@ -291,6 +345,8 @@ export function activate(context: vscode.ExtensionContext): void {
         }
     });
     const fileSaveListener = vscode.workspace.onDidSaveTextDocument((document) => {
+        // A saved file's marker is stale either way — no marker beats a wrong one.
+        diagnostics.delete(document.uri);
         const fileName = path.basename(document.fileName);
         if (
             fileName === 'Cargo.toml' ||
@@ -321,6 +377,7 @@ export function activate(context: vscode.ExtensionContext): void {
         openLogsCommand,
         formatCommand,
         formatWorkspaceCommand,
+        checkFormattingCommand,
         formatChangedCommand,
         formatStagedCommand,
         useAsDefaultFormatterCommand,
@@ -328,8 +385,38 @@ export function activate(context: vscode.ExtensionContext): void {
         fileSaveListener,
         editorListener,
         statusBarItem,
-        outputChannel
+        outputChannel,
+        diagnostics
     );
+}
+
+async function pickCheckScope(): Promise<CheckScope | undefined> {
+    const picked = await vscode.window.showQuickPick(
+        [
+            { label: 'Workspace', description: 'All Rust files', scope: 'workspace' as const },
+            { label: 'Changed', description: 'git diff working tree', scope: 'changed' as const },
+            { label: 'Staged', description: 'git diff --cached', scope: 'staged' as const }
+        ],
+        { placeHolder: 'Check formatting of…' }
+    );
+    return picked?.scope;
+}
+
+function reportNativeFallback(reason: NativeFailure, detail?: string): void {
+    nativeFallbackReason = reason;
+    const text = NATIVE_FAILURE_TEXT[reason];
+    writeLog(`Macro formatting skipped: ${text}${detail ? ` (${detail})` : ''}`);
+    if (reportedFallbacks.has(reason)) {
+        return;
+    }
+    reportedFallbacks.add(reason);
+    void vscode.window
+        .showWarningMessage(`rust-fmt: macro bodies left unformatted — ${text}.`, 'Open Logs')
+        .then((choice) => {
+            if (choice === 'Open Logs') {
+                outputChannel?.show(true);
+            }
+        });
 }
 
 async function formatDocument(
@@ -390,6 +477,7 @@ async function performFormat(
     if (statusBarItem && document.languageId === 'rust') {
         statusBarItem.text = '$(loading~spin) rust-fmt';
     }
+    nativeFallbackReason = undefined;
     const startTime = Date.now();
     try {
         const formattedText = resolvedContext
@@ -428,7 +516,10 @@ function showStatusBarTime(success: boolean, elapsedMs: number): void {
     if (!statusBarItem) {
         return;
     }
-    if (success) {
+    if (success && nativeFallbackReason) {
+        statusBarItem.text = '$(warning) rust-fmt: macros skipped';
+        statusBarItem.tooltip = `${NATIVE_FAILURE_TEXT[nativeFallbackReason]} — formatted with rustfmt only. Click to format workspace.`;
+    } else if (success) {
         statusBarItem.text = `rust-fmt: ✓ ${elapsedMs}ms`;
         statusBarItem.tooltip = `Last format: ${elapsedMs}ms. Click to format workspace.`;
     } else {
@@ -517,6 +608,9 @@ async function runControlCenterAction(action: ControlCenterActionId, context: vs
             return false;
         case 'runStaged':
             await vscode.commands.executeCommand('rust-fmt.formatStaged');
+            return false;
+        case 'checkFormatting':
+            await vscode.commands.executeCommand(CHECK_FORMATTING_COMMAND);
             return false;
         case 'setDefault':
             await applyDefaultFormatterSettings(activeResource, context, { askTarget: true });

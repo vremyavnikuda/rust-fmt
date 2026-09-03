@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - "v*"
+  # Manual runs build the six vsix files as artifacts and never publish;
+  # publishing happens only on a v* tag.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -15,7 +18,36 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Tag must match package.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match package.json version $version"
+            exit 1
+          fi
+      - name: Version must not be published already
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          id=$(node -p "const p = require('./package.json'); p.publisher + '.' + p.name")
+          if ! npx --yes @vscode/vsce show "$id" --json > marketplace.json 2> marketplace.err; then
+            echo "Could not query the Marketplace, skipping the duplicate-version check:"
+            cat marketplace.err
+            exit 0
+          fi
+          node -e '
+            const version = require("./package.json").version;
+            const published = JSON.parse(require("fs").readFileSync("marketplace.json", "utf8")).versions || [];
+            if (published.some((entry) => entry.version === version)) {
+              console.error(`Version ${version} is already on the Marketplace, and versions there are immutable.`);
+              console.error("Re-tagging cannot republish it. Bump the version in package.json and tag the new one.");
+              process.exit(1);
+            }
+            console.log(`Version ${version} is free to publish.`);
+          '
       - name: Create release if missing
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -25,8 +57,8 @@ jobs:
           fi
           gh release create "$GITHUB_REF_NAME" --generate-notes --title "$GITHUB_REF_NAME"
 
-  binaries:
-    name: ${{ matrix.asset }}
+  package:
+    name: ${{ matrix.platform }}
     needs: create
     runs-on: ${{ matrix.os }}
     strategy:
@@ -34,36 +66,94 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
+            platform: linux-x64
             binary: bin/linux-x64/rust-fmt-mf
-            asset: rust-fmt-mf-linux-x64
           - os: ubuntu-24.04-arm
+            platform: linux-arm64
             binary: bin/linux-arm64/rust-fmt-mf
-            asset: rust-fmt-mf-linux-arm64
           - os: windows-latest
+            platform: win32-x64
             binary: bin/win32-x64/rust-fmt-mf.exe
-            asset: rust-fmt-mf-win32-x64.exe
+          # ponytail: cross-built on the x64 runner, so the fixtures cannot run
+          # against it. Move to a windows-11-arm runner to get them back.
+          - os: windows-latest
+            platform: win32-arm64
+            binary: bin/win32-arm64/rust-fmt-mf.exe
+            target: aarch64-pc-windows-msvc
           - os: macos-latest
+            platform: darwin-arm64
             binary: bin/darwin-arm64/rust-fmt-mf
-            asset: rust-fmt-mf-darwin-arm64
           - os: macos-15-intel
+            platform: darwin-x64
             binary: bin/darwin-x64/rust-fmt-mf
-            asset: rust-fmt-mf-darwin-x64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
       - name: Setup Rust
         run: |
           rustup update stable --no-self-update
           rustup default stable
           rustup component add rustfmt
-      - name: Build bundled binary
+      - name: Install dependencies
+        run: npm ci
+      - name: Build binary
+        if: matrix.target == ''
         run: python scripts/build_current.py --release
-      - name: Validate bundled binary
+      - name: Cross-build binary
+        if: matrix.target != ''
+        shell: bash
+        run: |
+          rustup target add "${{ matrix.target }}"
+          cargo build --release --manifest-path rust-fmt-mf/Cargo.toml --target "${{ matrix.target }}"
+          mkdir -p "$(dirname "${{ matrix.binary }}")"
+          cp "rust-fmt-mf/target/${{ matrix.target }}/release/rust-fmt-mf.exe" "${{ matrix.binary }}"
+      - name: Validate binary
+        if: matrix.target == ''
         run: python rust-fmt-mf/tests/run_fixtures.py --binary ${{ matrix.binary }}
-      - name: Upload to release
+      - name: Keep only this platform's binary
+        shell: bash
+        run: find bin -mindepth 1 -maxdepth 1 -type d ! -name "${{ matrix.platform }}" -exec rm -rf {} +
+      - name: Package vsix
+        shell: bash
+        run: |
+          # The binary is already built and bin/ trimmed; letting prepublish run
+          # build:native here would rebuild it for the runner's own platform.
+          npm pkg set 'scripts.vscode:prepublish=npm run compile'
+          npx --yes @vscode/vsce package --target "${{ matrix.platform }}" -o "rust-fmt-${{ matrix.platform }}.vsix"
+      - name: Upload vsix artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsix-${{ matrix.platform }}
+          path: rust-fmt-${{ matrix.platform }}.vsix
+          if-no-files-found: error
+      - name: Attach binary and vsix to the release
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp "${{ matrix.binary }}" "${{ matrix.asset }}"
-          gh release upload "$GITHUB_REF_NAME" "${{ matrix.asset }}" --clobber
+          asset="rust-fmt-mf-${{ matrix.platform }}"
+          case "${{ matrix.platform }}" in win32-*) asset="$asset.exe";; esac
+          cp "${{ matrix.binary }}" "$asset"
+          gh release upload "$GITHUB_REF_NAME" "$asset" "rust-fmt-${{ matrix.platform }}.vsix" --clobber
+
+  publish:
+    name: Publish to Marketplace
+    needs: package
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download every vsix
+        uses: actions/download-artifact@v4
+        with:
+          pattern: vsix-*
+          merge-multiple: true
+      - name: Publish
+        shell: bash
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: npx --yes @vscode/vsce publish --packagePath rust-fmt-*.vsix

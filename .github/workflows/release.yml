@@ -1,0 +1,69 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  create:
+    name: Create release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Create release if missing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists"
+            exit 0
+          fi
+          gh release create "$GITHUB_REF_NAME" --generate-notes --title "$GITHUB_REF_NAME"
+
+  binaries:
+    name: ${{ matrix.asset }}
+    needs: create
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            binary: bin/linux-x64/rust-fmt-mf
+            asset: rust-fmt-mf-linux-x64
+          - os: ubuntu-24.04-arm
+            binary: bin/linux-arm64/rust-fmt-mf
+            asset: rust-fmt-mf-linux-arm64
+          - os: windows-latest
+            binary: bin/win32-x64/rust-fmt-mf.exe
+            asset: rust-fmt-mf-win32-x64.exe
+          - os: macos-latest
+            binary: bin/darwin-arm64/rust-fmt-mf
+            asset: rust-fmt-mf-darwin-arm64
+          - os: macos-15-intel
+            binary: bin/darwin-x64/rust-fmt-mf
+            asset: rust-fmt-mf-darwin-x64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Rust
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup component add rustfmt
+      - name: Build bundled binary
+        run: python scripts/build_current.py --release
+      - name: Validate bundled binary
+        run: python rust-fmt-mf/tests/run_fixtures.py --binary ${{ matrix.binary }}
+      - name: Upload to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp "${{ matrix.binary }}" "${{ matrix.asset }}"
+          gh release upload "$GITHUB_REF_NAME" "${{ matrix.asset }}" --clobber

@@ -18,7 +18,7 @@ pass_item! {
     pub      struct GeneratedByItem{pub           value:i32}
 }
 macro_rules!   collect_statements {
-    ($($statement:stmt)*) => {{
+    ($($statement:stmt);* $(;)?) => {{
         $($statement)*
     }};
 }

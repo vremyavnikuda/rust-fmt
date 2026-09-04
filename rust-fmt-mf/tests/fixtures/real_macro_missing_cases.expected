@@ -22,7 +22,7 @@ pass_item! {
 }
 
 macro_rules! collect_statements {
-    ($($statement:stmt)*) => {{
+    ($($statement:stmt);* $(;)?) => {{
         $($statement)*
     }};
 }

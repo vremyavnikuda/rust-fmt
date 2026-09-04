@@ -856,3 +856,36 @@ fn lf_only_input_is_completely_unaffected_by_crlf_handling() {
         "LF-only input must never gain a CR: {result:?}"
     );
 }
+
+#[test]
+fn identical_rustfmt_requests_are_served_from_the_memo() {
+    let _guard = COUNTER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    crate::formatter::reset_rustfmt_call_count();
+    let source = "fn memo_probe() {let x=1;}";
+    crate::formatter::run_rustfmt_no_macro(source, "rustfmt", "2021", None).unwrap();
+    assert_eq!(crate::formatter::rustfmt_call_count(), 1);
+    // Same binary, args and stdin: rustfmt is deterministic, so the second
+    // and third asks must not spawn anything.
+    let first = crate::formatter::run_rustfmt_no_macro(source, "rustfmt", "2021", None).unwrap();
+    let second = crate::formatter::run_rustfmt_no_macro(source, "rustfmt", "2021", None).unwrap();
+    assert_eq!(first, second);
+    assert_eq!(crate::formatter::rustfmt_call_count(), 1);
+    // A different edition is a different question and must still spawn.
+    crate::formatter::run_rustfmt_no_macro(source, "rustfmt", "2018", None).unwrap();
+    assert_eq!(crate::formatter::rustfmt_call_count(), 2);
+}
+
+#[test]
+fn rejected_input_is_memoized_too() {
+    let _guard = COUNTER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    crate::formatter::reset_rustfmt_call_count();
+    let broken = "fn ( { this is not rust";
+    assert!(crate::formatter::run_rustfmt_no_macro(broken, "rustfmt", "2021", None).is_err());
+    assert_eq!(crate::formatter::rustfmt_call_count(), 1);
+    assert!(crate::formatter::run_rustfmt_no_macro(broken, "rustfmt", "2021", None).is_err());
+    assert_eq!(crate::formatter::rustfmt_call_count(), 1);
+}

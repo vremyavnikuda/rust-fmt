@@ -95,6 +95,19 @@ def expected_skips(input_path: Path) -> set[str]:
     }
 
 
+def format_flags(input_path: Path) -> list[str]:
+    """Extra rust-fmt-mf flags for this fixture.
+
+    A `.compact` sidecar marks a fixture whose golden was produced with
+    blank-line compaction on. Compaction is off by default, so without the
+    marker these fixtures would only differ from their golden by the blank
+    lines the rule removes -- and their goldens cannot simply be regenerated,
+    because CORPUS_GOLDENS shares them with the already-compacted test-rs
+    sources.
+    """
+    return ["--compact-blank-lines"] if input_path.with_suffix(".compact").is_file() else []
+
+
 def safe_name(prefix: str, path: Path) -> str:
     return prefix + "__" + "__".join(path.parts).replace(".rs", "")
 
@@ -142,11 +155,12 @@ def audit_case(
     enforce_expected_skips: bool,
 ) -> dict[str, object]:
     source = input_path.read_text(encoding="utf-8")
+    command = [str(binary), *format_flags(input_path)]
     failures: list[str] = []
     try:
-        first = run([str(binary)], source)
+        first = run(command, source)
     except OSError as error:
-        first = subprocess.CompletedProcess([str(binary)], 127, "", str(error))
+        first = subprocess.CompletedProcess(command, 127, "", str(error))
 
     if first.returncode != 0:
         failures.append("FORMAT_ERROR")
@@ -168,7 +182,7 @@ def audit_case(
             ],
             first.stdout,
         )
-        second = run([str(binary)], first.stdout)
+        second = run(command, first.stdout)
         outcomes = parse_outcomes(first.stderr)
         if syntax.returncode != 0:
             failures.append("SYNTAX_ERROR")

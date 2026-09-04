@@ -60,6 +60,11 @@
           "default": "quiet",
           "description": "Controls default formatter onboarding prompts. Use 'guided' to enable switch prompts."
         },
+        "rustfmt.compactBlankLines": {
+          "type": "boolean",
+          "default": false,
+          "description": "Delete blank lines inside braces, keeping large files compact. Off by default: rustfmt preserves blank lines, and deleting them would make every format produce a diff unrelated to macros."
+        },
         "rustfmt.formatMacroBodies": {
           "type": "boolean",
           "default": false,

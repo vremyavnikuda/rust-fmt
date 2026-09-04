@@ -31,6 +31,7 @@ Works on **Linux, Windows, macOS**.
 | `rustfmt.path` | `"rustfmt"` | Path to rustfmt executable |
 | `rustfmt.extraArgs` | `[]` | Additional rustfmt arguments |
 | `rustfmt.onboarding.mode` | `"quiet"` | Onboarding mode (`quiet` / `guided`) |
+| `rustfmt.compactBlankLines` | `false` | Delete blank lines inside braces to keep large files compact |
 | `macroFormatter.native` | `true` | Enable `macro_rules!` body formatting |
 | `macroFormatter.path` | auto | Path to `rust-fmt-mf` binary |
 
@@ -109,6 +110,7 @@ require("conform").setup({
 | `--edition` | `2021` | Rust edition passed to `rustfmt` |
 | `--rustfmt-path` | `rustfmt` | Path to the `rustfmt` executable |
 | `--config-path` | auto | Path to `rustfmt.toml` / `.rustfmt.toml` |
+| `--compact-blank-lines` | off | Delete blank lines inside braces |
 
 `rustfmt.toml` and `rust-toolchain.toml` are picked up from the working
 directory upwards without any flags — `rustfmt` searches for its own config,

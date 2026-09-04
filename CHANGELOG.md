@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.13 - 2026-09-04
+
+### Changed
+
+- Blank lines are preserved by default. Five rules in `normalize_layout_gaps` deleted vertical whitespace that `rustfmt` keeps — inside any braces, between `struct` fields, after an attribute, between repeated invocations of one macro, and between `mod` declarations — so formatting a file for the first time produced a large diff that had nothing to do with macros, on ordinary code that contained none. All five now sit behind one switch, off by default, and the default output matches plain `rustfmt` byte for byte on code without macros. **This changes behavior for existing users:** set `rustfmt.compactBlankLines` to `true` (or pass `--compact-blank-lines` to `rust-fmt-mf`) to keep the previous, more compact output. Only the rules that *remove* vertical space are affected; the blank lines this formatter inserts between items are unchanged.
+
+### Added
+
+- `rustfmt.compactBlankLines` setting and the matching `--compact-blank-lines` flag on `rust-fmt-mf`.
+
+### Known limitations
+
+- Blank lines written inside a `macro_rules!` body are still removed regardless of the setting. That path does not go through `normalize_layout_gaps` at all: the arm-body renderer works on non-blank lines and re-indents them, so preserving them there is a change to how bodies are rendered rather than a rule to switch off.
+
 ## 0.1.12 - 2026-09-04
 
 ### Changed

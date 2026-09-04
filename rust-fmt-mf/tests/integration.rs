@@ -105,6 +105,26 @@ fn test_impl_for_converges_in_one_call() {
     assert_eq!(once, twice);
 }
 
+/// Format with blank-line compaction turned on.
+///
+/// Compaction is off by default so that ordinary code keeps the author's
+/// blank lines exactly as rustfmt would. The tests below predate the switch
+/// and exercise the rule itself, and the fixture goldens they share with the
+/// already-compacted test-rs sources were produced with it on; the matching
+/// fixtures carry a `.compact` sidecar so run_fixtures.py agrees.
+fn format_compact(source: &str) -> String {
+    rust_fmt_mf::format_source_with_options(
+        source,
+        "rustfmt",
+        "2021",
+        None,
+        rust_fmt_mf::types::FormatOptions {
+            compact_blank_lines: true,
+        },
+    )
+    .unwrap()
+}
+
 fn assert_tokens_preserved(input: &str, output: &str) {
     let before = rust_fmt_mf::parser::significant_tokens(input).unwrap();
     let after = rust_fmt_mf::parser::significant_tokens(output).unwrap();
@@ -124,7 +144,7 @@ fn assert_tokens_preserved(input: &str, output: &str) {
 fn real_macro_heavy_matches_user_golden() {
     let input = include_str!("fixtures/real_macro_heavy.rs");
     let expected = include_str!("fixtures/real_macro_heavy.expected");
-    let actual = rust_fmt_mf::format_source(input, "rustfmt", "2021", None).unwrap();
+    let actual = format_compact(input);
     assert_tokens_preserved(input, &actual);
     assert_eq!(actual, expected);
 }
@@ -133,7 +153,7 @@ fn real_macro_heavy_matches_user_golden() {
 fn real_macro_edge_cases_match_golden() {
     let input = include_str!("fixtures/real_macro_edge_cases.rs");
     let expected = include_str!("fixtures/real_macro_edge_cases.expected");
-    let actual = rust_fmt_mf::format_source(input, "rustfmt", "2021", None).unwrap();
+    let actual = format_compact(input);
     assert_tokens_preserved(input, &actual);
     assert_eq!(actual, expected);
 }
@@ -142,7 +162,7 @@ fn real_macro_edge_cases_match_golden() {
 fn real_macro_missing_cases_match_golden() {
     let input = include_str!("fixtures/real_macro_missing_cases.rs");
     let expected = include_str!("fixtures/real_macro_missing_cases.expected");
-    let actual = rust_fmt_mf::format_source(input, "rustfmt", "2021", None).unwrap();
+    let actual = format_compact(input);
     assert_only_commas_added(input, &actual);
     assert_eq!(actual, expected);
 }
@@ -210,7 +230,7 @@ fn main() {
     println!("{}", value);
 }
 "#;
-    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+    let actual = format_compact(source);
     assert_tokens_preserved(source, &actual);
     assert_eq!(actual, expected);
 }
@@ -448,7 +468,7 @@ fn generated_where_clause_ignores_const_expression_braces() {
 fn real_main_fmt_matches_golden() {
     let input = include_str!("fixtures/real_main_fmt.rs");
     let expected = include_str!("fixtures/real_main_fmt.expected");
-    let actual = rust_fmt_mf::format_source(input, "rustfmt", "2021", None).unwrap();
+    let actual = format_compact(input);
     assert_tokens_preserved(input, &actual);
     assert_eq!(actual, expected);
 }
@@ -834,7 +854,7 @@ fn layout_normalization_separates_items_but_not_list_entries() {
     }
 }
 "#;
-    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+    let actual = format_compact(source);
     assert_eq!(actual, expected);
     assert_tokens_preserved(source, &actual);
 }
@@ -843,7 +863,7 @@ fn layout_normalization_separates_items_but_not_list_entries() {
 fn consecutive_module_declarations_stay_compact() {
     let source = "pub mod first;\n\npub mod second;\n\nmod third;\n";
     let expected = "pub mod first;\npub mod second;\nmod third;\n";
-    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+    let actual = format_compact(source);
     assert_eq!(actual, expected);
 }
 
@@ -938,5 +958,62 @@ fn assert_only_tokens_added(input: &str, output: &str, allowed: &[&str]) {
             .iter()
             .all(|token| allowed.contains(&token.text.as_str())),
         "formatter added a disallowed token"
+    );
+}
+
+#[test]
+fn blank_lines_survive_by_default() {
+    // The mirror of nested_blocks_do_not_preserve_arbitrary_blank_lines:
+    // without the switch this crate must leave vertical space exactly where
+    // rustfmt leaves it, so installing it never reflows a whole file over
+    // something that has nothing to do with macros.
+    let source = r#"macro_rules! value {
+    () => {
+        let value = 42;
+        value
+    };
+}
+
+fn main() {
+    let value = value!();
+
+    println!("{}", value);
+}
+"#;
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+    assert_tokens_preserved(source, &actual);
+    assert_eq!(actual, source);
+
+    // Same input, compaction on: the blank line goes.
+    assert!(!format_compact(source).contains(
+        "value!();
+
+"
+    ));
+}
+
+#[test]
+fn compaction_is_off_for_struct_fields_and_attributes() {
+    let source = "#[derive(Debug)]
+
+struct A {
+    x: u8,
+
+    y: u8,
+}
+";
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+    assert_eq!(
+        actual, source,
+        "default must not delete the author's blank lines"
+    );
+    assert_eq!(
+        format_compact(source),
+        "#[derive(Debug)]
+struct A {
+    x: u8,
+    y: u8,
+}
+"
     );
 }

@@ -21,8 +21,11 @@ fn marker_collision_is_idempotent() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let source = include_str!("../tests/fixtures/marker_collision.rs");
-    let first = super::format_source_once(source, "rustfmt", "2021", None).unwrap();
-    let second = super::format_source_once(&first.text, "rustfmt", "2021", None).unwrap();
+    let first =
+        super::format_source_once(source, "rustfmt", "2021", None, Default::default()).unwrap();
+    let second =
+        super::format_source_once(&first.text, "rustfmt", "2021", None, Default::default())
+            .unwrap();
     assert_eq!(first.text, second.text);
 }
 
@@ -32,8 +35,11 @@ fn real_macro_edge_cases_are_idempotent() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let source = include_str!("../tests/fixtures/real_macro_edge_cases.rs");
-    let first = super::format_source_once(source, "rustfmt", "2021", None).unwrap();
-    let second = super::format_source_once(&first.text, "rustfmt", "2021", None).unwrap();
+    let first =
+        super::format_source_once(source, "rustfmt", "2021", None, Default::default()).unwrap();
+    let second =
+        super::format_source_once(&first.text, "rustfmt", "2021", None, Default::default())
+            .unwrap();
     assert_eq!(first.text, second.text);
 }
 
@@ -43,8 +49,11 @@ fn real_main_fmt_is_idempotent() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let source = include_str!("../tests/fixtures/real_main_fmt.rs");
-    let first = super::format_source_once(source, "rustfmt", "2021", None).unwrap();
-    let second = super::format_source_once(&first.text, "rustfmt", "2021", None).unwrap();
+    let first =
+        super::format_source_once(source, "rustfmt", "2021", None, Default::default()).unwrap();
+    let second =
+        super::format_source_once(&first.text, "rustfmt", "2021", None, Default::default())
+            .unwrap();
     assert_eq!(first.text, second.text);
 }
 

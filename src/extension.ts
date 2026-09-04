@@ -582,6 +582,7 @@ function getFormatterConfig(resource?: vscode.Uri): FormatterConfig {
         extraArgs: config.get<string[]>('extraArgs') || [],
         formatMacroBodies: config.get<boolean>('formatMacroBodies') || false,
         formatMacroMatchers: config.get<boolean>('formatMacroMatchers') || false,
+        compactBlankLines: config.get<boolean>('compactBlankLines') || false,
         nativeMacroFormatter: vscode.workspace.getConfiguration('macroFormatter').get<boolean>('native') || false,
         nativeMacroFormatterPath: vscode.workspace.getConfiguration('macroFormatter').get<string>('path') || ''
     };

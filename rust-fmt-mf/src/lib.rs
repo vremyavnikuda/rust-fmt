@@ -13,7 +13,7 @@ use crate::mapper::{apply_formatting, format_definition_without_brace_bodies};
 use crate::parser::parse_macro_defs;
 use crate::replacer::replace_macro_syntax_text;
 use crate::shadow::build_shadow_file_from_strings;
-use crate::types::{FormatResult, MacroOutcome, MacroStatus, Mapping};
+use crate::types::{FormatOptions, FormatResult, MacroOutcome, MacroStatus, Mapping};
 use ra_ap_rustc_lexer::{tokenize, FrontmatterAllowed, TokenKind};
 use std::collections::HashSet;
 use std::ops::Range;
@@ -259,6 +259,7 @@ fn final_format_pass(
     rustfmt_path: &str,
     edition: &str,
     config_path: Option<&str>,
+    options: FormatOptions,
 ) -> anyhow::Result<String> {
     let definitions = parse_macro_defs(source)?;
     let skipped = definitions
@@ -282,7 +283,7 @@ fn final_format_pass(
         );
     }
     let invocations = format_macro_invocations(&formatted, rustfmt_path, edition, config_path)?;
-    Ok(normalize_layout_gaps(&invocations))
+    Ok(normalize_layout_gaps(&invocations, options))
 }
 
 fn unique_skip_marker(source: &str) -> String {
@@ -702,7 +703,7 @@ fn format_named_brace_list(source: &str, base_indent: usize) -> Option<String> {
     Some(result)
 }
 
-fn normalize_layout_gaps(source: &str) -> String {
+fn normalize_layout_gaps(source: &str, options: FormatOptions) -> String {
     let tokens = layout_tokens(source);
     let macro_names = parse_macro_defs(source)
         .unwrap_or_default()
@@ -771,14 +772,21 @@ fn normalize_layout_gaps(source: &str) -> String {
         let nested_item_boundary = previous.kind == TokenKind::CloseBrace
             && item_container_after[previous_index]
             && is_item_start(source, next);
-        let nested_gap = depth_after[previous_index] > 0 && blank_lines > 1;
-        let comma_gap = previous.kind == TokenKind::Comma && blank_lines > 1;
+        // Every rule below only ever *removes* vertical space, and rustfmt
+        // keeps all of it, so the whole family lives behind one switch: with
+        // it off this crate leaves the author's blank lines exactly where
+        // rustfmt would. The rules that insert blank lines are unaffected.
+        let compact = options.compact_blank_lines;
+        let nested_gap = compact && depth_after[previous_index] > 0 && blank_lines > 1;
+        let comma_gap = compact && previous.kind == TokenKind::Comma && blank_lines > 1;
         let previous_macro = preceding_macro_name(source, &tokens, &significant, previous_index);
-        let repeated_macro_gap = previous.kind == TokenKind::Semi
+        let repeated_macro_gap = compact
+            && previous.kind == TokenKind::Semi
             && blank_lines > 1
             && previous_macro == following_macro_name(source, &tokens, next_index)
             && previous_macro.is_some_and(|name| macro_names.contains(name));
-        let attribute_gap = blank_lines > 1
+        let attribute_gap = compact
+            && blank_lines > 1
             && previous.kind == TokenKind::CloseBracket
             && is_attribute_close(&tokens, &significant, previous_index);
         // ponytail: `use` is deliberately excluded. Collapsing a blank line
@@ -788,7 +796,8 @@ fn normalize_layout_gaps(source: &str) -> String {
         // for deliberately unsorted `mod` declarations; that case degrades to
         // a plain-rustfmt fallback rather than bad output, so it is left
         // alone. Compare the two names here if it ever shows up in practice.
-        let compact_module_gap = blank_lines > 1
+        let compact_module_gap = compact
+            && blank_lines > 1
             && depth_after[previous_index] == 0
             && previous.kind == TokenKind::Semi
             && preceding_item_is_module(
@@ -1201,6 +1210,7 @@ fn format_source_once(
     rustfmt_path: &str,
     edition: &str,
     config_path: Option<&str>,
+    options: FormatOptions,
 ) -> anyhow::Result<OnceResult> {
     let definitions = parse_macro_defs(source)?;
     let mut text = source.to_string();
@@ -1316,7 +1326,7 @@ fn format_source_once(
         }
     }
 
-    let formatted = final_format_pass(&text, rustfmt_path, edition, config_path)?;
+    let formatted = final_format_pass(&text, rustfmt_path, edition, config_path, options)?;
     ensure_tokens_preserved_across_rustfmt_pass(&text, &formatted)?;
     Ok(OnceResult {
         text: formatted,
@@ -1331,13 +1341,35 @@ fn unique_prefix(source: &str) -> String {
         .expect("infinite marker namespace")
 }
 
+/// Format `source` with the default options, so the common case and every
+/// caller that predates `FormatOptions` need not name a struct it has no
+/// opinion about.
 pub fn format_source(
     source: &str,
     rustfmt_path: &str,
     edition: &str,
     config_path: Option<&str>,
 ) -> anyhow::Result<String> {
-    Ok(format_source_with_report(source, rustfmt_path, edition, config_path)?.text)
+    format_source_with_options(
+        source,
+        rustfmt_path,
+        edition,
+        config_path,
+        FormatOptions::default(),
+    )
+}
+
+pub fn format_source_with_options(
+    source: &str,
+    rustfmt_path: &str,
+    edition: &str,
+    config_path: Option<&str>,
+    options: FormatOptions,
+) -> anyhow::Result<String> {
+    Ok(
+        format_source_with_report_and_options(source, rustfmt_path, edition, config_path, options)?
+            .text,
+    )
 }
 
 /// Remap a byte span computed against `lf_text` (line endings already
@@ -1360,8 +1392,24 @@ pub fn format_source_with_report(
     edition: &str,
     config_path: Option<&str>,
 ) -> anyhow::Result<FormatResult> {
+    format_source_with_report_and_options(
+        source,
+        rustfmt_path,
+        edition,
+        config_path,
+        FormatOptions::default(),
+    )
+}
+
+pub fn format_source_with_report_and_options(
+    source: &str,
+    rustfmt_path: &str,
+    edition: &str,
+    config_path: Option<&str>,
+    options: FormatOptions,
+) -> anyhow::Result<FormatResult> {
     if !source.contains("\r\n") {
-        return format_source_with_report_impl(source, rustfmt_path, edition, config_path);
+        return format_source_with_report_impl(source, rustfmt_path, edition, config_path, options);
     }
     // rustfmt (and this crate's own shadow-file processing) silently drops
     // `\r` when fed CRLF input, which the safety oracle then correctly
@@ -1370,8 +1418,13 @@ pub fn format_source_with_report(
     // pass, then restore `\r\n` in the final output and remap every
     // reported span back to the original CRLF source's coordinates.
     let normalized_source = source.replace("\r\n", "\n");
-    let mut result =
-        format_source_with_report_impl(&normalized_source, rustfmt_path, edition, config_path)?;
+    let mut result = format_source_with_report_impl(
+        &normalized_source,
+        rustfmt_path,
+        edition,
+        config_path,
+        options,
+    )?;
     for outcome in &mut result.macros {
         outcome.span = remap_lf_span_to_crlf(outcome.span.clone(), &normalized_source);
     }
@@ -1384,6 +1437,7 @@ fn format_source_with_report_impl(
     rustfmt_path: &str,
     edition: &str,
     config_path: Option<&str>,
+    options: FormatOptions,
 ) -> anyhow::Result<FormatResult> {
     const MAX_FORMAT_PASSES: usize = 8;
 
@@ -1392,7 +1446,7 @@ fn format_source_with_report_impl(
     let mut skipped_reasons = vec![None; definitions.len()];
     let mut converged = false;
     for _ in 0..MAX_FORMAT_PASSES {
-        let pass = format_source_once(&text, rustfmt_path, edition, config_path)?;
+        let pass = format_source_once(&text, rustfmt_path, edition, config_path, options)?;
         ensure_tokens_preserved_across_rustfmt_pass(&text, &pass.text)?;
         for (stored, reason) in skipped_reasons.iter_mut().zip(pass.skipped_reasons) {
             if stored.is_none() {

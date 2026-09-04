@@ -1,6 +1,18 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
+/// Formatting knobs that are not part of `rustfmt`'s own configuration.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FormatOptions {
+    /// Delete blank lines inside braces, so a large file does not grow by
+    /// hundreds of lines of vertical whitespace. Off by default: `rustfmt`
+    /// keeps the author's blank lines, and silently deleting them would
+    /// make every first format produce a diff that has nothing to do with
+    /// macros. The rule only ever removes; the blank lines this crate
+    /// *inserts* between items are not affected.
+    pub compact_blank_lines: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MacroStatus {
     Formatted,

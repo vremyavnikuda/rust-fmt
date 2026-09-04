@@ -12,6 +12,7 @@ export interface FormatterConfig {
     formatMacroMatchers?: boolean;
     nativeMacroFormatter?: boolean;
     nativeMacroFormatterPath?: string;
+    compactBlankLines?: boolean;
 }
 
 export interface RustfmtContext {
@@ -371,6 +372,9 @@ export async function formatWithNativeMacroFormatter(
         args.push('--rustfmt-path', config.rustfmtPath);
         if (context.configPath) {
             args.push('--config-path', context.configPath);
+        }
+        if (config.compactBlankLines) {
+            args.push('--compact-blank-lines');
         }
         const env = { ...process.env };
         if (context.toolchain && !env.RUSTUP_TOOLCHAIN) {

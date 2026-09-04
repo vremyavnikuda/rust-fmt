@@ -856,3 +856,69 @@ fn lf_only_input_is_completely_unaffected_by_crlf_handling() {
         "LF-only input must never gain a CR: {result:?}"
     );
 }
+
+#[test]
+fn identical_rustfmt_requests_are_served_from_the_memo() {
+    let _guard = COUNTER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    crate::formatter::reset_rustfmt_call_count();
+    let source = "fn memo_probe() {let x=1;}";
+    crate::formatter::run_rustfmt_no_macro(source, "rustfmt", "2021", None).unwrap();
+    assert_eq!(crate::formatter::rustfmt_call_count(), 1);
+    // Same binary, args and stdin: rustfmt is deterministic, so the second
+    // and third asks must not spawn anything.
+    let first = crate::formatter::run_rustfmt_no_macro(source, "rustfmt", "2021", None).unwrap();
+    let second = crate::formatter::run_rustfmt_no_macro(source, "rustfmt", "2021", None).unwrap();
+    assert_eq!(first, second);
+    assert_eq!(crate::formatter::rustfmt_call_count(), 1);
+    // A different edition is a different question and must still spawn.
+    crate::formatter::run_rustfmt_no_macro(source, "rustfmt", "2018", None).unwrap();
+    assert_eq!(crate::formatter::rustfmt_call_count(), 2);
+}
+
+#[test]
+fn rejected_input_is_memoized_too() {
+    let _guard = COUNTER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    crate::formatter::reset_rustfmt_call_count();
+    let broken = "fn ( { this is not rust";
+    assert!(crate::formatter::run_rustfmt_no_macro(broken, "rustfmt", "2021", None).is_err());
+    assert_eq!(crate::formatter::rustfmt_call_count(), 1);
+    assert!(crate::formatter::run_rustfmt_no_macro(broken, "rustfmt", "2021", None).is_err());
+    assert_eq!(crate::formatter::rustfmt_call_count(), 1);
+}
+
+#[test]
+fn macro_rules_inside_another_macros_invocation_is_not_a_definition() {
+    // `quote! { macro_rules! .. }` is argument text belonging to `quote`,
+    // not an item of this file. Parsing it as a definition rewrote the
+    // insides of every `quote!` block in the crate's own source.
+    let source = r#"
+fn build() -> TokenStream {
+    quote::quote! {
+        macro_rules! __mf_rep_star { ($($t:tt)*) => { $($t)* }; }
+    }
+}
+"#;
+    let definitions = crate::parser::parse_macro_defs(source).unwrap();
+    assert!(
+        definitions.is_empty(),
+        "expected no definitions, got {:?}",
+        definitions.iter().map(|d| &d.name).collect::<Vec<_>>()
+    );
+    // A real top-level definition next to one still parses.
+    let with_real = format!(
+        "macro_rules! real {{ () => {{}}; }}
+{source}"
+    );
+    let definitions = crate::parser::parse_macro_defs(&with_real).unwrap();
+    assert_eq!(
+        definitions
+            .iter()
+            .map(|d| d.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["real"]
+    );
+}

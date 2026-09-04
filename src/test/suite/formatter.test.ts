@@ -416,7 +416,13 @@ suite('RustFormatter', () => {
             assert.deepStrictEqual(result, { ok: false, reason: 'missing-binary' });
         });
 
-        test('RustFormatter uses native formatting for ordinary Rust files', async () => {
+        test('RustFormatter uses native formatting for ordinary Rust files', async function () {
+            // The stub formatter below is a #!/bin/sh script, which Windows
+            // cannot spawn: the run would fall back to rustfmt and fail for a
+            // reason that has nothing to do with what this asserts.
+            if (process.platform === 'win32') {
+                this.skip();
+            }
             const nativePath = path.join(workspaceRoot, 'native-formatter');
             fs.writeFileSync(nativePath, '#!/bin/sh\nsed "s/fn main/fn native_main/"\n');
             fs.chmodSync(nativePath, 0o755);

@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { logger } from './log';
 import { RustFormatter, FormatterConfig, RustfmtContext, NativeFailure, onNativeFallback } from './formatter';
 import {
     CheckScope,
@@ -28,7 +29,6 @@ let statusBarItem: vscode.StatusBarItem;
 let statusBarTimer: ReturnType<typeof setTimeout> | undefined;
 const BASE_STATUS_TEXT = 'rust-fmt: active';
 const BASE_STATUS_TOOLTIP = 'rust-fmt is active. Click to format workspace.';
-let outputChannel: vscode.OutputChannel | undefined;
 const CONTROL_CENTER_COMMAND = 'rust-fmt.controlCenter';
 const CONFIGURE_BEHAVIOR_COMMAND = 'rust-fmt.configureBehavior';
 const OPEN_LOGS_COMMAND = 'rust-fmt.openLogs';
@@ -49,14 +49,12 @@ let macroPromptInProgress = false;
 
 export function activate(context: vscode.ExtensionContext): void {
     extContext = context;
-    console.log('[rust-fmt] Extension activated');
-    outputChannel = vscode.window.createOutputChannel('rust-fmt');
+    logger().info('Extension activated');
     diagnostics = vscode.languages.createDiagnosticCollection('rust-fmt');
     onNativeFallback(reportNativeFallback);
-    writeLog('Extension activated');
     initializeDefaultFormatterPromptState(context);
     const config = getFormatterConfig(vscode.window.activeTextEditor?.document.uri);
-    console.log(`[rust-fmt] Config: rustfmtPath=${config.rustfmtPath}, extraArgs=${JSON.stringify(config.extraArgs)}`);
+    logger().debug(`Config: rustfmtPath=${config.rustfmtPath}, extraArgs=${JSON.stringify(config.extraArgs)}`);
     formatter = new RustFormatter(config);
     const formattingProvider = vscode.languages.registerDocumentFormattingEditProvider('rust', {
         provideDocumentFormattingEdits(
@@ -74,7 +72,7 @@ export function activate(context: vscode.ExtensionContext): void {
             _options: vscode.FormattingOptions,
             token: vscode.CancellationToken
         ): Promise<vscode.TextEdit[]> {
-            console.log(`[rust-fmt] Formatting range: lines ${range.start.line + 1}-${range.end.line + 1}`);
+            logger().debug(`Formatting range: lines ${range.start.line + 1}-${range.end.line + 1}`);
             if (token.isCancellationRequested) {
                 return [];
             }
@@ -270,7 +268,7 @@ export function activate(context: vscode.ExtensionContext): void {
     });
 
     const openLogsCommand = vscode.commands.registerCommand(OPEN_LOGS_COMMAND, async () => {
-        outputChannel?.show(true);
+        logger().show(true);
     });
 
     const checkFormattingCommand = vscode.commands.registerCommand(CHECK_FORMATTING_COMMAND, async () => {
@@ -286,7 +284,7 @@ export function activate(context: vscode.ExtensionContext): void {
             },
             async (progress, token) => {
                 const summary = await runCheck(scope, formatter, diagnostics, progress, token);
-                writeLog(`Check (${scope}): ${summary.unformatted} of ${summary.total} files not formatted`);
+                logger().info(`Check (${scope}): ${summary.unformatted} of ${summary.total} files not formatted`);
                 if (summary.canceled) {
                     vscode.window.showInformationMessage('Formatting check canceled.');
                     return;
@@ -356,7 +354,7 @@ export function activate(context: vscode.ExtensionContext): void {
             fileName === 'rust-toolchain.toml'
         ) {
             formatter.clearContextCache();
-            writeLog('Context cache cleared due to config file change');
+            logger().info('Context cache cleared due to config file change');
         }
     });
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
@@ -385,7 +383,7 @@ export function activate(context: vscode.ExtensionContext): void {
         fileSaveListener,
         editorListener,
         statusBarItem,
-        outputChannel,
+        logger(),
         diagnostics
     );
 }
@@ -405,7 +403,7 @@ async function pickCheckScope(): Promise<CheckScope | undefined> {
 function reportNativeFallback(reason: NativeFailure, detail?: string): void {
     nativeFallbackReason = reason;
     const text = NATIVE_FAILURE_TEXT[reason];
-    writeLog(`Macro formatting skipped: ${text}${detail ? ` (${detail})` : ''}`);
+    logger().info(`Macro formatting skipped: ${text}${detail ? ` (${detail})` : ''}`);
     if (reportedFallbacks.has(reason)) {
         return;
     }
@@ -414,7 +412,7 @@ function reportNativeFallback(reason: NativeFailure, detail?: string): void {
         .showWarningMessage(`rust-fmt: macro bodies left unformatted — ${text}.`, 'Open Logs')
         .then((choice) => {
             if (choice === 'Open Logs') {
-                outputChannel?.show(true);
+                logger().show(true);
             }
         });
 }
@@ -453,7 +451,7 @@ async function performFormat(
     token: vscode.CancellationToken,
     resolvedContext?: RustfmtContext
 ): Promise<vscode.TextEdit[]> {
-    console.log(`[rust-fmt] Formatting document: ${document.uri.fsPath}`);
+    logger().debug(`Formatting document: ${document.uri.fsPath}`);
     if (token.isCancellationRequested) {
         return [];
     }
@@ -489,12 +487,12 @@ async function performFormat(
         }
         const elapsed = Date.now() - startTime;
         if (formattedText === null || formattedText.trim() === '') {
-            console.log('[rust-fmt] No formatted text returned');
+            logger().debug('No formatted text returned');
             showStatusBarTime(false, elapsed);
             return [];
         }
         if (formattedText === originalText) {
-            console.log('[rust-fmt] No changes needed');
+            logger().debug('No changes needed');
             showStatusBarTime(true, elapsed);
             return [];
         }
@@ -502,7 +500,7 @@ async function performFormat(
             document.positionAt(0),
             document.positionAt(originalText.length)
         );
-        console.log('[rust-fmt] Applying formatting changes');
+        logger().debug('Applying formatting changes');
         showStatusBarTime(true, elapsed);
         return [vscode.TextEdit.replace(fullRange, formattedText)];
     } catch {
@@ -616,7 +614,7 @@ async function runControlCenterAction(action: ControlCenterActionId, context: vs
             await applyDefaultFormatterSettings(activeResource, context, { askTarget: true });
             return false;
         case 'openLogs':
-            outputChannel?.show(true);
+            logger().show(true);
             return false;
         case 'reloadWorkspace':
             await vscode.commands.executeCommand('workbench.action.reloadWindow');
@@ -647,11 +645,6 @@ async function formatGitSelection(mode: 'working' | 'staged'): Promise<void> {
         mode === 'staged' ? 'rust-fmt: Formatting staged Rust files' : 'rust-fmt: Formatting changed Rust files',
         mode
     );
-}
-
-function writeLog(message: string): void {
-    const line = `[${new Date().toISOString()}] ${message}`;
-    outputChannel?.appendLine(line);
 }
 
 async function formatSelectedUris(

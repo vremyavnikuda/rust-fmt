@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { logger } from './log';
 
 export const DEFAULT_FORMATTER_ID = 'vremyavnikuda.rust-fmt';
 export const DEFAULT_FORMATTER_COMMAND = 'rust-fmt.useAsDefaultFormatter';
@@ -112,7 +113,7 @@ export async function applyDefaultFormatterSettings(
             await context.workspaceState.update(DEFAULT_FORMATTER_LAST_OBSERVED_KEY, DEFAULT_FORMATTER_ID);
         }
     } catch (err) {
-        console.error('[rust-fmt] Failed to update formatter settings', err);
+        logger().error('Failed to update formatter settings', err);
     }
 }
 

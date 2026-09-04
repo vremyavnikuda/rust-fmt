@@ -3,6 +3,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { logger } from './log';
 
 export interface FormatterConfig {
     rustfmtPath: string;
@@ -123,24 +124,24 @@ export class RustFormatter {
             return null;
         }
         if (this.config.nativeMacroFormatter) {
-            console.log('[rust-fmt] Using native macro formatter');
+            logger().debug('Using native macro formatter');
             const nativeResult = await formatWithNativeMacroFormatter(text, this.config, context, token);
             if (nativeResult.ok) {
                 return nativeResult.text;
             }
-            console.log(`[rust-fmt] Native macro formatter failed (${nativeResult.reason}), falling back to rustfmt with original text`);
+            logger().debug(`Native macro formatter failed (${nativeResult.reason}), falling back to rustfmt with original text`);
             if (nativeResult.reason !== 'canceled') {
                 nativeFallbackReporter?.(nativeResult.reason, nativeResult.detail);
             }
         }
-        console.log(`[rust-fmt] Formatting with rustfmt at: ${this.config.rustfmtPath}`);
+        logger().debug(`Formatting with rustfmt at: ${this.config.rustfmtPath}`);
         return new Promise((resolve) => {
             const args = [...buildRustfmtArgs(this.config, context), ...additionalArgs];
-            console.log(`[rust-fmt] Running: ${this.config.rustfmtPath} ${args.join(' ')}`);
+            logger().debug(`Running: ${this.config.rustfmtPath} ${args.join(' ')}`);
             const env = { ...process.env };
             if (context.toolchain && !env.RUSTUP_TOOLCHAIN) {
                 env.RUSTUP_TOOLCHAIN = context.toolchain;
-                console.log(`[rust-fmt] Using toolchain override: ${context.toolchain}`);
+                logger().debug(`Using toolchain override: ${context.toolchain}`);
             }
             const rustfmt = cp.spawn(this.config.rustfmtPath, args, {
                 cwd: context.cwd,
@@ -152,7 +153,7 @@ export class RustFormatter {
             let settled = false;
             const timeoutMs = 10000;
             const cancelSubscription = token?.onCancellationRequested(() => {
-                console.warn('[rust-fmt] Formatting canceled, killing rustfmt process');
+                logger().warn('Formatting canceled, killing rustfmt process');
                 rustfmt.kill();
                 finish(null);
             });
@@ -166,7 +167,7 @@ export class RustFormatter {
                 resolve(result);
             };
             const timeout = setTimeout(() => {
-                console.error('[rust-fmt] Timeout: rustfmt took too long, killing process');
+                logger().error('Timeout: rustfmt took too long, killing process');
                 rustfmt.kill();
                 finish(null);
             }, timeoutMs);
@@ -180,7 +181,7 @@ export class RustFormatter {
                 if (settled) {
                     return;
                 }
-                console.error('[rust-fmt] Error:', err);
+                logger().error('Error:', err);
                 vscode.window.showErrorMessage(`Failed to run rustfmt: ${err.message}`);
                 finish(null);
             });
@@ -188,16 +189,16 @@ export class RustFormatter {
                 if (settled) {
                     return;
                 }
-                console.log(`[rust-fmt] Process exited with code: ${code}`);
+                logger().debug(`Process exited with code: ${code}`);
                 if (stderr) {
-                    console.log(`[rust-fmt] stderr: ${stderr}`);
+                    logger().debug(`stderr: ${stderr}`);
                 }
                 if (code === 0) {
                     if (!stdout || stdout.trim() === '') {
-                        console.log('[rust-fmt] Warning: empty output from rustfmt');
+                        logger().debug('Warning: empty output from rustfmt');
                         finish(null);
                     } else {
-                        console.log(`[rust-fmt] Successfully formatted, output length: ${stdout.length}`);
+                        logger().debug(`Successfully formatted, output length: ${stdout.length}`);
                         finish(stdout);
                     }
                 } else {
@@ -229,7 +230,7 @@ export class RustFormatter {
         config?: FormatterConfig,
         token?: vscode.CancellationToken
     ): Promise<boolean> {
-        console.log(`[rust-fmt] Running cargo fmt in: ${cwd}`);
+        logger().debug(`Running cargo fmt in: ${cwd}`);
         if (token?.isCancellationRequested) {
             return false;
         }
@@ -244,7 +245,7 @@ export class RustFormatter {
             const env = { ...process.env };
             if (toolchain && !env.RUSTUP_TOOLCHAIN) {
                 env.RUSTUP_TOOLCHAIN = toolchain;
-                console.log(`[rust-fmt] Using toolchain override for cargo fmt: ${toolchain}`);
+                logger().debug(`Using toolchain override for cargo fmt: ${toolchain}`);
             }
             const cargo = cp.spawn('cargo', args, {
                 cwd,
@@ -255,7 +256,7 @@ export class RustFormatter {
             let settled = false;
             const timeoutMs = 60000;
             const cancelSubscription = token?.onCancellationRequested(() => {
-                console.warn('[rust-fmt] cargo fmt canceled, killing process');
+                logger().warn('cargo fmt canceled, killing process');
                 cargo.kill();
                 finish(false);
             });
@@ -269,7 +270,7 @@ export class RustFormatter {
                 resolve(result);
             };
             const timeout = setTimeout(() => {
-                console.error('[rust-fmt] Timeout: cargo fmt took too long, killing process');
+                logger().error('Timeout: cargo fmt took too long, killing process');
                 cargo.kill();
                 finish(false);
             }, timeoutMs);
@@ -280,7 +281,7 @@ export class RustFormatter {
                 if (settled) {
                     return;
                 }
-                console.error('[rust-fmt] cargo fmt error:', err);
+                logger().error('cargo fmt error:', err);
                 vscode.window.showErrorMessage(`Failed to run cargo fmt: ${err.message}`);
                 finish(false);
             });
@@ -289,12 +290,12 @@ export class RustFormatter {
                     return;
                 }
                 if (code === 0) {
-                    console.log('[rust-fmt] cargo fmt completed successfully');
+                    logger().debug('cargo fmt completed successfully');
                     finish(true);
                 } else {
-                    console.error(`[rust-fmt] cargo fmt exited with code ${code}`);
+                    logger().error(`cargo fmt exited with code ${code}`);
                     if (stderr) {
-                        console.log(`[rust-fmt] cargo fmt stderr: ${stderr}`);
+                        logger().debug(`cargo fmt stderr: ${stderr}`);
                     }
                     vscode.window.showErrorMessage(`cargo fmt exited with code ${code}: ${stderr}`);
                     finish(false);
@@ -344,9 +345,9 @@ async function logNativeBinary(binaryPath: string): Promise<void> {
     loggedNativeBinaries.add(binaryPath);
     try {
         const hash = await sha256File(binaryPath);
-        console.log(`[rust-fmt] Native macro formatter: ${binaryPath} (sha256 ${hash})`);
+        logger().debug(`Native macro formatter: ${binaryPath} (sha256 ${hash})`);
     } catch (error) {
-        console.warn(`[rust-fmt] Cannot hash native macro formatter ${binaryPath}: ${error}`);
+        logger().warn(`Cannot hash native macro formatter ${binaryPath}: ${error}`);
     }
 }
 
@@ -403,14 +404,14 @@ export async function formatWithNativeMacroFormatter(
         proc.stderr.on('data', (data) => { stderr += data.toString(); });
         proc.on('error', (err) => {
             if (settled) return;
-            console.error(`[rust-fmt] Native macro formatter error: ${err.message}`);
+            logger().error(`Native macro formatter error: ${err.message}`);
             finish({ ok: false, reason: 'spawn-error', detail: err.message });
         });
         proc.on('close', (code) => {
             if (settled) return;
             if (code === 0) {
                 if (stderr.trim()) {
-                    console.log(`[rust-fmt] Native macro formatter diagnostics:\n${stderr.trimEnd()}`);
+                    logger().debug(`Native macro formatter diagnostics:\n${stderr.trimEnd()}`);
                 }
                 finish(
                     stdout
@@ -418,7 +419,7 @@ export async function formatWithNativeMacroFormatter(
                         : { ok: false, reason: 'exit-code', detail: 'exited 0 with empty output' }
                 );
             } else {
-                console.error(`[rust-fmt] Native macro formatter exited with code ${code}: ${stderr}`);
+                logger().error(`Native macro formatter exited with code ${code}: ${stderr}`);
                 finish({ ok: false, reason: 'exit-code', detail: stderr.trim() || `exit code ${code}` });
             }
         });

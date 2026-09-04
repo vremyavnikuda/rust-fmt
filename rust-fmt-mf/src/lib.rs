@@ -25,6 +25,20 @@ fn try_format_as_mod(
     edition: &str,
     config_path: Option<&str>,
 ) -> Option<String> {
+    // A `mod` wrapper only parses when the fragment is a sequence of items,
+    // so for the common statement-body case rustfmt is guaranteed to reject
+    // it and the caller falls through to `try_format_as_fn` anyway. The
+    // first token settles it without paying a process spawn.
+    //
+    // ponytail: conservative, not exact -- `syn::parse_file` would be exact,
+    // but it is the only syn call in the crate and linking its parser took
+    // the binary from 1.1 to 3.2 MB, which every user downloads. Being wrong
+    // here only costs the spawn we would have made anyway.
+    let inner_tokens = layout_tokens(inner);
+    let first = next_layout_token(&inner_tokens, 0)?;
+    if !is_item_start(inner, &inner_tokens[first]) {
+        return None;
+    }
     let wrapper = format!("mod __mf_rep_{id} {{\n{inner}\n}}");
     let formatted = run_rustfmt(&wrapper, rustfmt_path, edition, config_path).ok()?;
     extract_wrapper_body(&formatted, "mod")
@@ -767,17 +781,24 @@ fn normalize_layout_gaps(source: &str) -> String {
         let attribute_gap = blank_lines > 1
             && previous.kind == TokenKind::CloseBracket
             && is_attribute_close(&tokens, &significant, previous_index);
-        let compact_module_or_use_gap = blank_lines > 1
+        // ponytail: `use` is deliberately excluded. Collapsing a blank line
+        // between two `use` items merges two import groups, and rustfmt then
+        // sorts across the seam, which the token-preservation oracle reads as
+        // reordered code and aborts the whole file on. The same hazard exists
+        // for deliberately unsorted `mod` declarations; that case degrades to
+        // a plain-rustfmt fallback rather than bad output, so it is left
+        // alone. Compare the two names here if it ever shows up in practice.
+        let compact_module_gap = blank_lines > 1
             && depth_after[previous_index] == 0
             && previous.kind == TokenKind::Semi
-            && preceding_item_is_module_or_use(
+            && preceding_item_is_module(
                 source,
                 &tokens,
                 &significant,
                 &depth_after,
                 previous_index,
             )
-            && following_item_is_module_or_use(source, &tokens, &significant, next_index);
+            && following_item_is_module(source, &tokens, &significant, next_index);
 
         let desired = if top_level_boundary || nested_item_boundary {
             format!("\n\n{indent}")
@@ -785,7 +806,7 @@ fn normalize_layout_gaps(source: &str) -> String {
             || comma_gap
             || repeated_macro_gap
             || attribute_gap
-            || compact_module_or_use_gap
+            || compact_module_gap
         {
             format!("\n{indent}")
         } else {
@@ -803,7 +824,7 @@ fn normalize_layout_gaps(source: &str) -> String {
     result
 }
 
-fn preceding_item_is_module_or_use(
+fn preceding_item_is_module(
     source: &str,
     tokens: &[LayoutToken],
     significant: &[usize],
@@ -820,7 +841,7 @@ fn preceding_item_is_module_or_use(
         if matches!(tokens[index].kind, TokenKind::Semi | TokenKind::CloseBrace) {
             break;
         }
-        if matches!(&source[tokens[index].span.clone()], "mod" | "use") {
+        if &source[tokens[index].span.clone()] == "mod" {
             return true;
         }
     }
@@ -903,9 +924,7 @@ fn top_level_semi_needs_blank(
             has_macro_bang = true;
         }
         match &source[tokens[index].span.clone()] {
-            "mod" | "use" => {
-                return !following_item_is_module_or_use(source, tokens, significant, next)
-            }
+            "mod" | "use" => return !following_item_is_module(source, tokens, significant, next),
             "struct" | "type" | "const" | "static" => return true,
             _ => {}
         }
@@ -913,7 +932,7 @@ fn top_level_semi_needs_blank(
     has_macro_bang
 }
 
-fn following_item_is_module_or_use(
+fn following_item_is_module(
     source: &str,
     tokens: &[LayoutToken],
     significant: &[usize],
@@ -932,7 +951,7 @@ fn following_item_is_module_or_use(
                 "pub" | "unsafe" | "async" | "extern" | "crate" | "#" | "[" | "]"
             )
         })
-        .is_some_and(|text| matches!(text, "mod" | "use"))
+        .is_some_and(|text| text == "mod")
 }
 
 fn is_attribute_close(tokens: &[LayoutToken], significant: &[usize], close: usize) -> bool {
@@ -1298,7 +1317,7 @@ fn format_source_once(
     }
 
     let formatted = final_format_pass(&text, rustfmt_path, edition, config_path)?;
-    ensure_tokens_preserved(&text, &formatted)?;
+    ensure_tokens_preserved_across_rustfmt_pass(&text, &formatted)?;
     Ok(OnceResult {
         text: formatted,
         skipped_reasons,
@@ -1374,7 +1393,7 @@ fn format_source_with_report_impl(
     let mut converged = false;
     for _ in 0..MAX_FORMAT_PASSES {
         let pass = format_source_once(&text, rustfmt_path, edition, config_path)?;
-        ensure_tokens_preserved(&text, &pass.text)?;
+        ensure_tokens_preserved_across_rustfmt_pass(&text, &pass.text)?;
         for (stored, reason) in skipped_reasons.iter_mut().zip(pass.skipped_reasons) {
             if stored.is_none() {
                 *stored = reason;
@@ -1415,7 +1434,31 @@ fn format_source_with_report_impl(
     Ok(FormatResult { text, macros })
 }
 
+/// Assert `after` is a formatting-only rewrite of `before`.
+///
+/// rustfmt is allowed to *add* `,`, `{` and `}` (a collapsed body regains
+/// braces, a wrapped list gains a trailing comma), so those are skipped in
+/// `after`. Removals are not tolerated: inside a macro body, dropping the
+/// braces of `move || { $body }` changes what the macro expands to, and
+/// this oracle is the only thing standing between that and the user's file.
 fn ensure_tokens_preserved(before: &str, after: &str) -> anyhow::Result<()> {
+    compare_tokens(before, after, false)
+}
+
+/// The same check for a whole-file pass of plain rustfmt over real code,
+/// where removals are legitimate: a single-expression `match` arm loses its
+/// braces once it fits on one line, and a trailing comma disappears when a
+/// list collapses. Refusing those aborted formatting for the entire file.
+///
+/// Only safe because every macro-body rewrite is checked separately by
+/// `ensure_tokens_preserved` before it is folded into the file, and this
+/// pass runs rustfmt with `format_macro_bodies=false`, so rustfmt does not
+/// reach inside a macro body here.
+fn ensure_tokens_preserved_across_rustfmt_pass(before: &str, after: &str) -> anyhow::Result<()> {
+    compare_tokens(before, after, true)
+}
+
+fn compare_tokens(before: &str, after: &str, allow_removals: bool) -> anyhow::Result<()> {
     let before = parser::significant_tokens(before)?;
     let after = parser::significant_tokens(after)?;
     let mut left = 0usize;
@@ -1426,6 +1469,8 @@ fn ensure_tokens_preserved(before: &str, after: &str) -> anyhow::Result<()> {
             right += 1;
         } else if matches!(after[right].text.as_str(), "," | "{" | "}") {
             right += 1;
+        } else if allow_removals && matches!(before[left].text.as_str(), "," | "{" | "}") {
+            left += 1;
         } else {
             anyhow::bail!(
                 "formatter changed significant Rust token {left}: {:?} {:?} -> {:?} {:?}",
@@ -1436,11 +1481,17 @@ fn ensure_tokens_preserved(before: &str, after: &str) -> anyhow::Result<()> {
             );
         }
     }
-    if left != before.len()
-        || after[right..]
+    let is_punctuation = |tokens: &[parser::SignificantToken]| {
+        tokens
             .iter()
-            .any(|token| !matches!(token.text.as_str(), "," | "{" | "}"))
-    {
+            .all(|token| matches!(token.text.as_str(), "," | "{" | "}"))
+    };
+    let before_tail_ok = if allow_removals {
+        is_punctuation(&before[left..])
+    } else {
+        left == before.len()
+    };
+    if !before_tail_ok || !is_punctuation(&after[right..]) {
         anyhow::bail!(
             "formatter removed or changed significant Rust tokens: {} -> {}",
             before.len(),

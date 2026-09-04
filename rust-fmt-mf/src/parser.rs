@@ -172,14 +172,53 @@ fn scan_arms(tokens: &[SourceToken], open: usize, close: usize) -> anyhow::Resul
 }
 
 /// Parse macro_rules definitions using Rust lexer tokens and byte-accurate spans.
+/// Token-index ranges spanned by a macro *invocation*'s delimiters, such as
+/// the `{ .. }` of `quote! { .. }`.
+///
+/// A `macro_rules!` written inside one is argument text belonging to that
+/// macro, not an item of this file. Treating it as a definition rewrote the
+/// insides of `quote!` blocks -- flattening their indentation and emitting
+/// `macro_rules !name` -- leaving them worse than rustfmt had them.
+fn macro_invocation_ranges(source: &str, tokens: &[SourceToken]) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    for index in 0..tokens.len() {
+        if tokens[index].kind != TokenKind::Ident
+            || &source[tokens[index].span.clone()] == "macro_rules"
+        {
+            continue;
+        }
+        let Some(bang) = next_non_trivia(tokens, index + 1) else {
+            continue;
+        };
+        if tokens[bang].kind != TokenKind::Bang {
+            continue;
+        }
+        let Some(open) = next_non_trivia(tokens, bang + 1) else {
+            continue;
+        };
+        if delimiter_pair(tokens[open].kind).is_none() {
+            continue;
+        }
+        let Ok(close) = matching_delimiter(tokens, open) else {
+            continue;
+        };
+        ranges.push(open..close);
+    }
+    ranges
+}
+
 pub fn parse_macro_defs(source: &str) -> anyhow::Result<Vec<MacroDef>> {
     let tokens = lex(source)?;
+    let invocations = macro_invocation_ranges(source, &tokens);
     let mut defs = Vec::new();
 
     for index in 0..tokens.len() {
         if tokens[index].kind != TokenKind::Ident
             || &source[tokens[index].span.clone()] != "macro_rules"
         {
+            continue;
+        }
+        if invocations.iter().any(|range| range.contains(&index)) {
             continue;
         }
         let Some(bang) = next_non_trivia(&tokens, index + 1) else {

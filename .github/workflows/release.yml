@@ -139,7 +139,15 @@ jobs:
           asset="rust-fmt-mf-${{ matrix.platform }}"
           case "${{ matrix.platform }}" in win32-*) asset="$asset.exe";; esac
           cp "${{ matrix.binary }}" "$asset"
-          gh release upload "$GITHUB_REF_NAME" "$asset" "rust-fmt-${{ matrix.platform }}.vsix" --clobber
+          # One bare hash per asset rather than a combined SHA256SUMS: each job
+          # can write its own without a further job to merge them, and
+          # install.sh fetches only the file it is about to run.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$asset" | cut -d' ' -f1 > "$asset.sha256"
+          else
+            shasum -a 256 "$asset" | cut -d' ' -f1 > "$asset.sha256"
+          fi
+          gh release upload "$GITHUB_REF_NAME" "$asset" "$asset.sha256" "rust-fmt-${{ matrix.platform }}.vsix" --clobber
 
   publish:
     name: Publish to Marketplace

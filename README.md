@@ -68,6 +68,26 @@ The macro formatter is a plain stdin-to-stdout filter, so no plugin is needed.
 
 ### Install
 
+Linux and macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vremyavnikuda/rust-fmt/main/install.sh | sh
+```
+
+Windows, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/vremyavnikuda/rust-fmt/main/install.ps1 | iex
+```
+
+Both put the binary in `~/.local/bin`, check its SHA-256 against the one
+published with the release, and tell you what to add to your shell config if
+that directory is not on your `PATH`. `RUSTFMT_MF_VERSION=v0.1.14` pins a
+release, `RUSTFMT_MF_BIN_DIR` installs somewhere else.
+
+<details>
+<summary>Without the script</summary>
+
 Download `rust-fmt-mf` for your platform from the
 [latest release](https://github.com/vremyavnikuda/rust-fmt/releases/latest),
 put it on your `PATH`, and (outside Windows) make it executable:
@@ -81,6 +101,8 @@ Or build it yourself:
 ```bash
 cargo install --git https://github.com/vremyavnikuda/rust-fmt rust-fmt-mf
 ```
+
+</details>
 
 ### Vim
 

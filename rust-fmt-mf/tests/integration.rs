@@ -1017,3 +1017,23 @@ struct A {
 "
     );
 }
+
+#[test]
+fn consecutive_use_statements_do_not_gain_blank_lines() {
+    // 0.1.12 put a blank line between every pair of consecutive `use`
+    // statements, on essentially every Rust file, because the rule that
+    // decides whether a top-level `;` needs a blank line after it shared a
+    // mod-only predicate with the `mod`-compaction rule.
+    let source = "use std::fmt;
+use std::io;
+use std::sync::Mutex;
+
+fn f() {
+    let _ = (Mutex::new(0), std::io::stdout());
+}
+";
+    let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
+    assert_eq!(actual, source);
+    // Compaction is about removing blank lines, never about adding them.
+    assert_eq!(format_compact(source), source);
+}

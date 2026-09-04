@@ -807,7 +807,7 @@ fn normalize_layout_gaps(source: &str, options: FormatOptions) -> String {
                 &depth_after,
                 previous_index,
             )
-            && following_item_is_module(source, &tokens, &significant, next_index);
+            && following_item_keyword(source, &tokens, &significant, next_index) == Some("mod");
 
         let desired = if top_level_boundary || nested_item_boundary {
             format!("\n\n{indent}")
@@ -933,7 +933,12 @@ fn top_level_semi_needs_blank(
             has_macro_bang = true;
         }
         match &source[tokens[index].span.clone()] {
-            "mod" | "use" => return !following_item_is_module(source, tokens, significant, next),
+            "mod" | "use" => {
+                return !matches!(
+                    following_item_keyword(source, tokens, significant, next),
+                    Some("mod" | "use")
+                )
+            }
             "struct" | "type" | "const" | "static" => return true,
             _ => {}
         }
@@ -941,14 +946,23 @@ fn top_level_semi_needs_blank(
     has_macro_bang
 }
 
-fn following_item_is_module(
-    source: &str,
+/// The item keyword that starts the item at `next`, skipping the modifiers
+/// and attributes in front of it.
+///
+/// Two call sites need different sets of it, which is the whole reason this
+/// reports the keyword instead of answering a yes/no question: collapsing a
+/// blank line is only ever right between `mod` declarations, while omitting
+/// one is right between any two of `mod` and `use`. Folding both into one
+/// mod-only predicate put a blank line between every pair of consecutive
+/// `use` statements.
+fn following_item_keyword<'a>(
+    source: &'a str,
     tokens: &[LayoutToken],
     significant: &[usize],
     next: usize,
-) -> bool {
+) -> Option<&'a str> {
     let Some(position) = significant.iter().position(|index| *index == next) else {
-        return false;
+        return None;
     };
     significant[position..]
         .iter()
@@ -960,7 +974,6 @@ fn following_item_is_module(
                 "pub" | "unsafe" | "async" | "extern" | "crate" | "#" | "[" | "]"
             )
         })
-        .is_some_and(|text| text == "mod")
 }
 
 fn is_attribute_close(tokens: &[LayoutToken], significant: &[usize], close: usize) -> bool {

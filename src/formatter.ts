@@ -13,6 +13,14 @@ export interface FormatterConfig {
     nativeMacroFormatter?: boolean;
     nativeMacroFormatterPath?: string;
     compactBlankLines?: boolean;
+    /// Directory of the extension instance that is actually running, from
+    /// its own ExtensionContext. Looking the extension up by id instead
+    /// returns whichever copy VS Code decided to hand back, and a machine
+    /// with a Marketplace build installed alongside a development one has
+    /// several: the running code would then spawn another copy's bundled
+    /// binary, silently formatting with a different version than the one
+    /// under test.
+    extensionPath?: string;
 }
 
 export interface RustfmtContext {
@@ -313,20 +321,26 @@ export function getNativeMacroFormatterPath(config: FormatterConfig): string | n
     if (config.nativeMacroFormatterPath) {
         return config.nativeMacroFormatterPath;
     }
-    const extDir = vscode.extensions.getExtension('vremyavnikuda.rust-fmt')?.extensionPath;
-    if (extDir) {
-        const platform = process.platform === 'win32' ? 'win32'
-            : process.platform === 'darwin' ? 'darwin'
-            : 'linux';
-        const arch = process.arch;
-        const binaryName = process.platform === 'win32' ? 'rust-fmt-mf.exe' : 'rust-fmt-mf';
+    const platform = process.platform === 'win32' ? 'win32'
+        : process.platform === 'darwin' ? 'darwin'
+        : 'linux';
+    const arch = process.arch;
+    const binaryName = process.platform === 'win32' ? 'rust-fmt-mf.exe' : 'rust-fmt-mf';
+    const candidates = [
+        config.extensionPath,
+        vscode.extensions.getExtension('vremyavnikuda.rust-fmt')?.extensionPath
+    ];
+    for (const extDir of candidates) {
+        if (!extDir) {
+            continue;
+        }
         const bundled = path.join(extDir, 'bin', `${platform}-${arch}`, binaryName);
         try {
             if (fs.existsSync(bundled)) {
                 return bundled;
             }
         } catch {
-            // ignore
+            // Unreadable path: fall through to the next candidate.
         }
     }
     return null;
@@ -346,7 +360,9 @@ async function logNativeBinary(binaryPath: string): Promise<void> {
     loggedNativeBinaries.add(binaryPath);
     try {
         const hash = await sha256File(binaryPath);
-        logger().debug(`Native macro formatter: ${binaryPath} (sha256 ${hash})`);
+        // info, not debug: which binary is actually running is the first
+        // question every "it formats differently than I expect" ends at.
+        logger().info(`Native macro formatter: ${binaryPath} (sha256 ${hash})`);
     } catch (error) {
         logger().warn(`Cannot hash native macro formatter ${binaryPath}: ${error}`);
     }

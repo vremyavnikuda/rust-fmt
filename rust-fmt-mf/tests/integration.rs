@@ -162,7 +162,10 @@ fn real_macro_edge_cases_match_golden() {
 fn real_macro_missing_cases_match_golden() {
     let input = include_str!("fixtures/real_macro_missing_cases.rs");
     let expected = include_str!("fixtures/real_macro_missing_cases.expected");
-    let actual = format_compact(input);
+    // Default options: this fixture's golden is shared with the test-rs
+    // source, and with compaction now a switch the two only agree in the
+    // mode users actually get.
+    let actual = rust_fmt_mf::format_source(input, "rustfmt", "2021", None).unwrap();
     assert_only_commas_added(input, &actual);
     assert_eq!(actual, expected);
 }

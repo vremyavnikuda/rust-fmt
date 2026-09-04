@@ -827,6 +827,13 @@ pub(crate) fn expand_inline_structs(source: &str) -> String {
         let close = tokens[close_token].span.start;
         let close_end = tokens[close_token].span.end;
         let inner = canonical_token_spacing(&trimmed[open + 1..close]);
+        // An empty body belongs on one line: `fn f() {}` is what rustfmt
+        // writes, and splitting it into `fn f() {` / `}` was the only place
+        // this crate disagreed with rustfmt on ordinary items.
+        if inner.trim().is_empty() {
+            output.push(line.to_string());
+            continue;
+        }
         let header = canonical_token_spacing(&trimmed[..open]);
         if header.starts_with("#[") {
             if let Some(attribute_end) = header.find("] ") {

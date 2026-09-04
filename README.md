@@ -44,6 +44,12 @@ Set as default formatter in `settings.json`:
 }
 ```
 
+Delete blank lines inside braces:
+
+```json
+"rustfmt.compactBlankLines": true
+```
+
 ## Commands
 
 | Command | Description |

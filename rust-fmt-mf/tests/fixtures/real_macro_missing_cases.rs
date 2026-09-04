@@ -108,6 +108,16 @@ macro_rules! commented_matcher {
         $left + $right
     }};
 }
+macro_rules!   empty_bodies {
+    ($name:ident) => {
+        pub struct $name;
+        impl $name{pub fn noop(&self){}}
+        impl Default for $name { fn default() -> Self { $name } }
+    };
+}
+
+empty_bodies!(NoopHolder);
+
 pub fn exercise_missing_cases() {
     collect_statements! {
         let   mut
@@ -128,9 +138,7 @@ pub fn exercise_missing_cases() {
             value + 2
         }
     );
-
     let typed: GeneratedResult = Ok(42);
-
     let _ = typed;
     let candidate = Some(5);
     match candidate {
@@ -141,9 +149,9 @@ pub fn exercise_missing_cases() {
     }
     let _ = triple_generated!(14);
     let raw = RawIdentifier { r#type: 42 };
-
     let _ = raw.r#type;
     let _ = via_crate!();
     let _ = commented_matcher!(20, 22);
     let _ = exported_hidden_value!();
+    NoopHolder::default().noop();
 }

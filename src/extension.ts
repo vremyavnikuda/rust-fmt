@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { logger } from './log';
+import { logChannel, logger } from './log';
 import { RustFormatter, FormatterConfig, RustfmtContext, NativeFailure, onNativeFallback } from './formatter';
 import {
     CheckScope,
@@ -383,7 +383,7 @@ export function activate(context: vscode.ExtensionContext): void {
         fileSaveListener,
         editorListener,
         statusBarItem,
-        logger(),
+        logChannel(),
         diagnostics
     );
 }
@@ -583,6 +583,7 @@ function getFormatterConfig(resource?: vscode.Uri): FormatterConfig {
         formatMacroBodies: config.get<boolean>('formatMacroBodies') || false,
         formatMacroMatchers: config.get<boolean>('formatMacroMatchers') || false,
         compactBlankLines: config.get<boolean>('compactBlankLines') || false,
+        extensionPath: extContext?.extensionPath,
         nativeMacroFormatter: vscode.workspace.getConfiguration('macroFormatter').get<boolean>('native') || false,
         nativeMacroFormatterPath: vscode.workspace.getConfiguration('macroFormatter').get<string>('path') || ''
     };

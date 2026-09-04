@@ -733,6 +733,7 @@ fn normalize_layout_gaps(source: &str, options: FormatOptions) -> String {
                     &tokens,
                     &significant,
                     index,
+                    !options.compact_blank_lines,
                 ));
             }
             TokenKind::CloseParen | TokenKind::CloseBrace | TokenKind::CloseBracket => {
@@ -769,7 +770,16 @@ fn normalize_layout_gaps(source: &str, options: FormatOptions) -> String {
                         previous_index,
                         next_index,
                     ));
-        let nested_item_boundary = previous.kind == TokenKind::CloseBrace
+        // A unit `struct S;` is a whole item, so the `;` ending it is an
+        // item boundary just as much as a closing brace. Deliberately only
+        // those: a trait's `fn f(&self);` and an `type Output;` also end in
+        // `;` but are members of one item, and separating them puts a blank
+        // line inside every trait and impl body.
+        let semi_ends_type_declaration = previous.kind == TokenKind::Semi
+            && preceding_item_keyword(source, &tokens, &significant, previous_index)
+                .is_some_and(|keyword| matches!(keyword, "struct" | "enum" | "union"));
+        let nested_item_boundary = (previous.kind == TokenKind::CloseBrace
+            || semi_ends_type_declaration)
             && item_container_after[previous_index]
             && is_item_start(source, next);
         // Every rule below only ever *removes* vertical space, and rustfmt
@@ -833,6 +843,33 @@ fn normalize_layout_gaps(source: &str, options: FormatOptions) -> String {
     result
 }
 
+/// The keyword that started the item ending at `semi`, looking back only
+/// within that item.
+fn preceding_item_keyword<'a>(
+    source: &'a str,
+    tokens: &[LayoutToken],
+    significant: &[usize],
+    semi: usize,
+) -> Option<&'a str> {
+    let position = significant.iter().position(|index| *index == semi)?;
+    for &index in significant[..position].iter().rev() {
+        if matches!(
+            tokens[index].kind,
+            TokenKind::Semi | TokenKind::CloseBrace | TokenKind::OpenBrace
+        ) {
+            return None;
+        }
+        let text = &source[tokens[index].span.clone()];
+        if matches!(
+            text,
+            "struct" | "enum" | "union" | "type" | "const" | "static" | "fn" | "use" | "mod"
+        ) {
+            return Some(text);
+        }
+    }
+    None
+}
+
 fn preceding_item_is_module(
     source: &str,
     tokens: &[LayoutToken],
@@ -862,10 +899,24 @@ fn brace_opens_item_container(
     tokens: &[LayoutToken],
     significant: &[usize],
     open: usize,
+    separate_macro_body_items: bool,
 ) -> bool {
     let Some(position) = significant.iter().position(|index| *index == open) else {
         return false;
     };
+    // The `{ .. }` right after a `=>` is a macro arm's transcriber, and it
+    // holds items just like a `mod` body does. Walking back from it reaches
+    // `macro_rules` and answers "no" for the whole definition, which is why
+    // two items inside a macro body stayed jammed together while the very
+    // same items outside one got a blank line between them.
+    if separate_macro_body_items {
+        let mut preceding = significant[..position].iter().rev();
+        if let (Some(&gt), Some(&eq)) = (preceding.next(), preceding.next()) {
+            if tokens[gt].kind == TokenKind::Gt && tokens[eq].kind == TokenKind::Eq {
+                return true;
+            }
+        }
+    }
     for &index in significant[..position].iter().rev() {
         if matches!(
             tokens[index].kind,

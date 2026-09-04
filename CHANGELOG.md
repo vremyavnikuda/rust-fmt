@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.12 - 2026-09-04
+
+### Changed
+
+- Formatting a macro-heavy file is roughly three times faster, from two `rustfmt` subprocesses out of every three being redundant. The convergence loop re-asks `rustfmt` the same question on every pass, and `format_invocation_inner`/`preformat_rep_bodies` ask it twice per fragment through `try_format_as_mod().or_else(try_format_as_fn())`; since `rustfmt` is deterministic for a given binary, arguments and stdin, both successes and rejections are now served from a process-local memo. On top of that, the `mod` probe is skipped outright when the fragment cannot be a sequence of items — repetition and invocation bodies are usually statements, which never parse inside a `mod`, so that first spawn was always wasted. Measured on Windows against 0.1.11: `real_macro_heavy.rs` (356 lines) goes from 53 spawns and 2517 ms to 17 spawns and 842 ms, `real_macro_edge_cases.rs` (404 lines) from 61 and 2897 ms to 30 and 1450 ms, and a file with no macros at all from 3 spawns to 2. Output is byte-identical on every file checked, and the fixture corpus still reports 80/80 execution safety and 75/75 exact-output conformance.
+- Dropped the `syn` dependency, which was declared but never called.
+
+### Fixed
+
+- A file was abandoned to plain `rustfmt`, with a "macro bodies left unformatted" warning, whenever it had two top-level `use` items separated by a blank line — which is to say on essentially every idiomatic Rust file, this repository's own `parser.rs` included. `normalize_layout_gaps` collapsed that blank line, which merges two import groups; `rustfmt` then sorts across the seam, and the token-preservation oracle correctly reported the reordering as changed code. The compaction now applies to `mod` declarations only, the case its test actually covers.
+- The same abandonment happened when `rustfmt` removed the braces of a single-expression `match` arm that had come to fit on one line — a rewrite `rustfmt` is entitled to make on ordinary code, which the oracle rejected because it tolerated only added `,`, `{` and `}`, never removed ones. Removals are now accepted on a whole-file pass of plain `rustfmt`, which runs with `format_macro_bodies=false` and so never reaches inside a macro body. Every macro-body rewrite keeps the strict check: losing the braces of `move || { $body }` inside a repetition changes what the macro expands to.
+- A `macro_rules!` written as argument text inside another macro's invocation, such as a `quote! { .. }` block, was taken for an item of the file and reformatted. `parse_macro_defs` scanned the whole token stream without regard for enclosing invocation delimiters. On this repository's own `shadow.rs` that flattened a `quote!` block's indentation and emitted `macro_rules !__mf_rep_star`, leaving it further from plain `rustfmt` than it had started. A definition nested inside another definition is unaffected.
+- `rust-fmt: Open Logs` showed almost nothing. Thirty-three of the thirty-six log lines went to `console.*`, which lands in the Extension Host devtools console rather than the extension's own output channel, so a failed format left nothing to look at in the place the command opens. Everything now goes through a single `LogOutputChannel`: verbosity is VS Code's own log-level picker instead of a setting of ours, per-format detail is `debug` and notable events are `info`.
+
 ## 0.1.11 - 2026-09-04
 
 ### Added

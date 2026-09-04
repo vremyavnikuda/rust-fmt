@@ -13,7 +13,6 @@ name = "rust-fmt-mf"
 path = "src/main.rs"
 
 [dependencies]
-syn = { version = "2", features = ["full", "parsing", "printing", "extra-traits"] }
 proc-macro2 = "1"
 quote = "1"
 clap = { version = "4", features = ["derive"] }

@@ -25,6 +25,20 @@ fn try_format_as_mod(
     edition: &str,
     config_path: Option<&str>,
 ) -> Option<String> {
+    // A `mod` wrapper only parses when the fragment is a sequence of items,
+    // so for the common statement-body case rustfmt is guaranteed to reject
+    // it and the caller falls through to `try_format_as_fn` anyway. The
+    // first token settles it without paying a process spawn.
+    //
+    // ponytail: conservative, not exact -- `syn::parse_file` would be exact,
+    // but it is the only syn call in the crate and linking its parser took
+    // the binary from 1.1 to 3.2 MB, which every user downloads. Being wrong
+    // here only costs the spawn we would have made anyway.
+    let inner_tokens = layout_tokens(inner);
+    let first = next_layout_token(&inner_tokens, 0)?;
+    if !is_item_start(inner, &inner_tokens[first]) {
+        return None;
+    }
     let wrapper = format!("mod __mf_rep_{id} {{\n{inner}\n}}");
     let formatted = run_rustfmt(&wrapper, rustfmt_path, edition, config_path).ok()?;
     extract_wrapper_body(&formatted, "mod")

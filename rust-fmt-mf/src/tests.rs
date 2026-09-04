@@ -889,3 +889,36 @@ fn rejected_input_is_memoized_too() {
     assert!(crate::formatter::run_rustfmt_no_macro(broken, "rustfmt", "2021", None).is_err());
     assert_eq!(crate::formatter::rustfmt_call_count(), 1);
 }
+
+#[test]
+fn macro_rules_inside_another_macros_invocation_is_not_a_definition() {
+    // `quote! { macro_rules! .. }` is argument text belonging to `quote`,
+    // not an item of this file. Parsing it as a definition rewrote the
+    // insides of every `quote!` block in the crate's own source.
+    let source = r#"
+fn build() -> TokenStream {
+    quote::quote! {
+        macro_rules! __mf_rep_star { ($($t:tt)*) => { $($t)* }; }
+    }
+}
+"#;
+    let definitions = crate::parser::parse_macro_defs(source).unwrap();
+    assert!(
+        definitions.is_empty(),
+        "expected no definitions, got {:?}",
+        definitions.iter().map(|d| &d.name).collect::<Vec<_>>()
+    );
+    // A real top-level definition next to one still parses.
+    let with_real = format!(
+        "macro_rules! real {{ () => {{}}; }}
+{source}"
+    );
+    let definitions = crate::parser::parse_macro_defs(&with_real).unwrap();
+    assert_eq!(
+        definitions
+            .iter()
+            .map(|d| d.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["real"]
+    );
+}

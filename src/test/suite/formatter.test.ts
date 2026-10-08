@@ -135,6 +135,86 @@ suite('RustFormatter', () => {
 
             assert.strictEqual(ctx.crateRoot, undefined, 'should not find Cargo.toml above workspaceFolder');
         });
+
+        test('resolves an edition inherited from the workspace', async () => {
+            fs.writeFileSync(
+                path.join(workspaceRoot, 'Cargo.toml'),
+                '[workspace]\nmembers = ["member"]\n\n[workspace.package]\nedition = "2024"\n'
+            );
+            const memberDir = path.join(workspaceRoot, 'member');
+            fs.mkdirSync(path.join(memberDir, 'src'), { recursive: true });
+            fs.writeFileSync(
+                path.join(memberDir, 'Cargo.toml'),
+                '[package]\nname = "member"\nedition.workspace = true\n'
+            );
+            const testFile = path.join(memberDir, 'src', 'lib.rs');
+            fs.writeFileSync(testFile, 'fn main() {}');
+
+            const ctx = await formatter.resolveContext(testFile, workspaceRoot);
+
+            assert.strictEqual(ctx.crateRoot, memberDir);
+            assert.strictEqual(ctx.edition, '2024');
+        });
+
+        test('reads the package edition, not one from another table', async () => {
+            fs.writeFileSync(
+                path.join(workspaceRoot, 'Cargo.toml'),
+                '[package.metadata.other]\nedition = "2015"\n\n[package]\nname = "test"\nedition = "2021"\n'
+            );
+            const testFile = path.join(workspaceRoot, 'lib.rs');
+            fs.writeFileSync(testFile, 'fn main() {}');
+
+            const ctx = await formatter.resolveContext(testFile, workspaceRoot);
+
+            assert.strictEqual(ctx.edition, '2021');
+        });
+    });
+
+    suite('formatRange', () => {
+
+        test('leaves code outside the selection untouched', async () => {
+            fs.writeFileSync(path.join(workspaceRoot, 'Cargo.toml'), '[package]\nname = "test"\nedition = "2021"\n');
+            const testFile = path.join(workspaceRoot, 'lib.rs');
+            fs.writeFileSync(testFile, 'fn a(){let x=1;}\nfn b(){let y=2;}\n');
+            const document = await vscode.workspace.openTextDocument(testFile);
+            const nativeFormatter = new RustFormatter({
+                rustfmtPath: 'rustfmt',
+                extraArgs: [],
+                nativeMacroFormatter: true
+            });
+
+            const result = await nativeFormatter.formatRange(document, new vscode.Range(0, 0, 0, 16));
+
+            // Stable rustfmt has no --file-lines and refuses (null); nightly
+            // formats line 1 only. Either way `fn b` is not the formatter's
+            // to touch.
+            assert.ok(
+                result === null || result.includes('fn b(){let y=2;}'),
+                `code outside the range changed: ${JSON.stringify(result)}`
+            );
+        });
+    });
+
+    suite('multi-byte output', () => {
+
+        // ~150 KB of three-byte characters: pipe chunks are sure to split one.
+        // Many small functions, because one huge body overflows rustfmt's stack.
+        const wide = Array.from(
+            { length: 2000 },
+            (_, i) => `fn f${i}() {\n    let _s = "漢字テキスト漢字テキスト漢字";\n}\n`
+        ).join('\n');
+
+        test('native formatter output keeps characters split across chunks', async () => {
+            const config: FormatterConfig = { rustfmtPath: 'rustfmt', extraArgs: [], nativeMacroFormatter: true };
+            const result = await formatWithNativeMacroFormatter(wide, config, { cwd: undefined });
+            assert.ok(result.ok, JSON.stringify(result).slice(0, 300));
+            assert.ok(result.ok && result.text === wide, 'output differs from the already formatted input');
+        });
+
+        test('rustfmt output keeps characters split across chunks', async () => {
+            const result = await formatter.formatWithContext(wide, { cwd: undefined });
+            assert.ok(result === wide, 'output differs from the already formatted input');
+        });
     });
 
     suite('config', () => {
@@ -391,6 +471,20 @@ suite('RustFormatter', () => {
             const result = await formatWithNativeMacroFormatter('fn main() {}', config, context);
             assert.ok(result.ok, `should return formatted output, got: ${JSON.stringify(result)}`);
             assert.ok(result.ok && result.text.includes('fn main()'), `expected formatted fn main, got: ${JSON.stringify(result)}`);
+        });
+
+        test('passes rustfmt.extraArgs through to rustfmt', async () => {
+            const config: FormatterConfig = {
+                rustfmtPath: 'rustfmt',
+                extraArgs: ['--config', 'max_width=40'],
+                nativeMacroFormatter: true
+            };
+            const source = 'fn main() { let x = foo(aaaaaaaaaaaa, bbbbbbbbbbbbbbbb, ccccccccccccccc); }\n';
+            const result = await formatWithNativeMacroFormatter(source, config, { cwd: undefined });
+            assert.deepStrictEqual(result, {
+                ok: true,
+                text: 'fn main() {\n    let x = foo(\n        aaaaaaaaaaaa,\n        bbbbbbbbbbbbbbbb,\n        ccccccccccccccc,\n    );\n}\n'
+            });
         });
 
         test('reports cancellation instead of a bare failure', async () => {

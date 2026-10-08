@@ -132,7 +132,11 @@ export class RustFormatter {
         if (token?.isCancellationRequested) {
             return null;
         }
-        if (this.config.nativeMacroFormatter) {
+        // The native binary formats the whole file and has no use for
+        // rustfmt's own flags, so a request that carries some (a range's
+        // --file-lines) goes to rustfmt; otherwise formatting a selection
+        // rewrites every line outside it.
+        if (this.config.nativeMacroFormatter && additionalArgs.length === 0) {
             logger().debug('Using native macro formatter');
             const nativeResult = await formatWithNativeMacroFormatter(text, this.config, context, token);
             if (nativeResult.ok) {
@@ -180,6 +184,9 @@ export class RustFormatter {
                 rustfmt.kill();
                 finish(null);
             }, timeoutMs);
+            // Decode as a stream: a pipe chunk may end mid-character.
+            rustfmt.stdout.setEncoding('utf8');
+            rustfmt.stderr.setEncoding('utf8');
             rustfmt.stdout.on('data', (data) => {
                 stdout += data.toString();
             });
@@ -283,6 +290,7 @@ export class RustFormatter {
                 cargo.kill();
                 finish(false);
             }, timeoutMs);
+            cargo.stderr.setEncoding('utf8');
             cargo.stderr.on('data', (data) => {
                 stderr += data.toString();
             });
@@ -392,6 +400,9 @@ export async function formatWithNativeMacroFormatter(
         if (config.compactBlankLines) {
             args.push('--compact-blank-lines');
         }
+        for (const arg of config.extraArgs ?? []) {
+            args.push(`--rustfmt-arg=${arg}`);
+        }
         const env = { ...process.env };
         if (context.toolchain && !env.RUSTUP_TOOLCHAIN) {
             env.RUSTUP_TOOLCHAIN = context.toolchain;
@@ -420,6 +431,9 @@ export async function formatWithNativeMacroFormatter(
             proc.kill();
             finish({ ok: false, reason: 'timeout', detail: `no output after ${timeoutMs / 1000}s` });
         }, timeoutMs);
+        // Decode as a stream: a pipe chunk may end mid-character.
+        proc.stdout.setEncoding('utf8');
+        proc.stderr.setEncoding('utf8');
         proc.stdout.on('data', (data) => { stdout += data.toString(); });
         proc.stderr.on('data', (data) => { stderr += data.toString(); });
         proc.on('error', (err) => {
@@ -481,7 +495,7 @@ async function resolveRustfmtContext(filePath: string, workspaceFolder?: string)
         findNearestFile(fileDir, ['rust-toolchain.toml', 'rust-toolchain'], workspaceFolder)
     ]);
     const [edition, toolchain] = await Promise.all([
-        cargoTomlPath ? readEditionFromCargoToml(cargoTomlPath) : Promise.resolve(undefined),
+        cargoTomlPath ? readEditionFromCargoToml(cargoTomlPath, workspaceFolder) : Promise.resolve(undefined),
         toolchainPath ? readToolchainFromFile(toolchainPath) : Promise.resolve(undefined)
     ]);
     const crateRoot = cargoTomlPath ? path.dirname(cargoTomlPath) : workspaceFolder;
@@ -530,11 +544,56 @@ async function findNearestFile(
     return null;
 }
 
-async function readEditionFromCargoToml(cargoTomlPath: string): Promise<string | undefined> {
+/// The `edition` of one TOML table, or 'workspace' when it is inherited.
+/// ponytail: line-based, not a TOML parser -- it reads the
+/// `edition = "2021"`, `edition.workspace = true` and
+/// `edition = { workspace = true }` forms Cargo.toml uses in practice.
+function tomlTableEdition(contents: string, table: string): string | undefined {
+    let current = '';
+    for (const line of contents.split(/\r?\n/)) {
+        const header = line.match(/^\s*\[([^\]]+)\]\s*(#.*)?$/);
+        if (header) {
+            current = header[1].trim();
+            continue;
+        }
+        if (current !== table) {
+            continue;
+        }
+        const value = line.match(/^\s*edition\s*=\s*["'](\d{4})["']/);
+        if (value) {
+            return value[1];
+        }
+        if (/^\s*edition\s*(\.\s*workspace\s*=\s*true|=\s*\{\s*workspace\s*=\s*true\s*\})/.test(line)) {
+            return 'workspace';
+        }
+    }
+    return undefined;
+}
+
+async function readEditionFromCargoToml(cargoTomlPath: string, stopDir?: string): Promise<string | undefined> {
     try {
-        const contents = await fs.promises.readFile(cargoTomlPath, 'utf8');
-        const match = contents.match(/^\s*edition\s*=\s*["'](\d{4})["']\s*(#.*)?$/m);
-        return match?.[1];
+        let manifest = cargoTomlPath;
+        let contents = await fs.promises.readFile(manifest, 'utf8');
+        const edition = tomlTableEdition(contents, 'package');
+        if (edition !== 'workspace') {
+            return edition;
+        }
+        // Inherited: the workspace root is the nearest manifest, this one
+        // included, that has a [workspace] table.
+        while (!/^\s*\[workspace\]/m.test(contents)) {
+            const above = path.dirname(path.dirname(manifest));
+            if (above === path.dirname(manifest)) {
+                return undefined;
+            }
+            const next = await findNearestFile(above, ['Cargo.toml'], stopDir);
+            if (!next) {
+                return undefined;
+            }
+            manifest = next;
+            contents = await fs.promises.readFile(manifest, 'utf8');
+        }
+        const inherited = tomlTableEdition(contents, 'workspace.package');
+        return inherited === 'workspace' ? undefined : inherited;
     } catch {
         return undefined;
     }

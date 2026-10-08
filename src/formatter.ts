@@ -3,6 +3,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { applyHunksInLines } from './lineDiff';
 import { logger } from './log';
 
 export interface FormatterConfig {
@@ -95,12 +96,27 @@ export class RustFormatter {
         const filePath = document.uri.fsPath;
         const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath;
         const context = await this.resolveContext(filePath, workspaceFolder);
-        // rustfmt uses 1-based line numbers
-        const startLine = range.start.line + 1;
-        const endLine = range.end.line + 1;
-        const fileLines = JSON.stringify([{ file: 'stdin', range: [startLine, endLine] }]);
-        const additionalArgs = ['--file-lines', fileLines];
-        return this.formatWithRustfmt(text, context, token, additionalArgs);
+        // rustfmt's own --file-lines is nightly-only, and it would bypass the
+        // macro formatter. Format the whole file the usual way instead and
+        // keep only the changes that touch the selection.
+        const formatted = await this.formatWithRustfmt(text, context, token);
+        if (formatted === null) {
+            return null;
+        }
+        const partial = applyHunksInLines(text, formatted, range.start.line, range.end.line);
+        if (partial === text || partial === formatted) {
+            return partial;
+        }
+        // A line diff shows rustfmt moving a line (sorting imports) as a
+        // deletion here and an insertion elsewhere; taking only one half
+        // would lose or duplicate code. Formatting what we produced must
+        // land exactly where formatting the original did, or it is not a
+        // partial format of it.
+        if (await this.formatWithRustfmt(partial, context, token) !== formatted) {
+            logger().warn('Format Selection: these lines cannot be formatted apart from the rest of the file; format the whole document instead.');
+            return null;
+        }
+        return partial;
     }
 
     public async resolveContext(filePath: string, workspaceFolder?: string): Promise<RustfmtContext> {
@@ -114,29 +130,15 @@ export class RustFormatter {
         return this.runCargoFmt(context.crateRoot, context.toolchain, this.config, token);
     }
 
-    public async formatTextWithRustfmt(
-        text: string,
-        context: RustfmtContext,
-        token?: vscode.CancellationToken,
-        additionalArgs: string[] = []
-    ): Promise<string | null> {
-        return this.formatWithRustfmt(text, context, token, additionalArgs);
-    }
-
     private async formatWithRustfmt(
         text: string,
         context: RustfmtContext,
-        token?: vscode.CancellationToken,
-        additionalArgs: string[] = []
+        token?: vscode.CancellationToken
     ): Promise<string | null> {
         if (token?.isCancellationRequested) {
             return null;
         }
-        // The native binary formats the whole file and has no use for
-        // rustfmt's own flags, so a request that carries some (a range's
-        // --file-lines) goes to rustfmt; otherwise formatting a selection
-        // rewrites every line outside it.
-        if (this.config.nativeMacroFormatter && additionalArgs.length === 0) {
+        if (this.config.nativeMacroFormatter) {
             logger().debug('Using native macro formatter');
             const nativeResult = await formatWithNativeMacroFormatter(text, this.config, context, token);
             if (nativeResult.ok) {
@@ -149,7 +151,7 @@ export class RustFormatter {
         }
         logger().debug(`Formatting with rustfmt at: ${this.config.rustfmtPath}`);
         return new Promise((resolve) => {
-            const args = [...buildRustfmtArgs(this.config, context), ...additionalArgs];
+            const args = buildRustfmtArgs(this.config, context);
             logger().debug(`Running: ${this.config.rustfmtPath} ${args.join(' ')}`);
             const env = { ...process.env };
             if (context.toolchain && !env.RUSTUP_TOOLCHAIN) {
@@ -391,16 +393,21 @@ export async function formatWithNativeMacroFormatter(
     }
     await logNativeBinary(binaryPath);
     return new Promise((resolve) => {
+        // The binary passes --edition and --config-path to rustfmt itself, and
+        // rustfmt rejects either one given twice. A user's own value wins, as
+        // it does on the plain rustfmt path, so it replaces the detected one.
+        const { edition, configPath, rest } = splitOwnedArgs(config.extraArgs ?? []);
         const args: string[] = [];
-        args.push('--edition', context.edition || '2021');
+        args.push('--edition', edition ?? context.edition ?? '2021');
         args.push('--rustfmt-path', config.rustfmtPath);
-        if (context.configPath) {
-            args.push('--config-path', context.configPath);
+        const effectiveConfigPath = configPath ?? context.configPath;
+        if (effectiveConfigPath) {
+            args.push('--config-path', effectiveConfigPath);
         }
         if (config.compactBlankLines) {
             args.push('--compact-blank-lines');
         }
-        for (const arg of config.extraArgs ?? []) {
+        for (const arg of rest) {
             args.push(`--rustfmt-arg=${arg}`);
         }
         const env = { ...process.env };
@@ -464,6 +471,30 @@ export async function formatWithNativeMacroFormatter(
         proc.stdin.write(text);
         proc.stdin.end();
     });
+}
+
+/// Take `--edition` and `--config-path`, in either `--flag value` or
+/// `--flag=value` form, out of rustfmt arguments.
+function splitOwnedArgs(extraArgs: string[]): { edition?: string; configPath?: string; rest: string[] } {
+    const owned: { edition?: string; configPath?: string } = {};
+    const rest: string[] = [];
+    const keys: Record<string, 'edition' | 'configPath'> = { '--edition': 'edition', '--config-path': 'configPath' };
+    for (let index = 0; index < extraArgs.length; index += 1) {
+        const arg = extraArgs[index];
+        const [flag, inline] = arg.split(/=(.*)/s);
+        const key = keys[flag];
+        if (!key) {
+            rest.push(arg);
+            continue;
+        }
+        if (inline !== undefined) {
+            owned[key] = inline;
+        } else if (index + 1 < extraArgs.length) {
+            index += 1;
+            owned[key] = extraArgs[index];
+        }
+    }
+    return { ...owned, rest };
 }
 
 function buildRustfmtArgs(config: FormatterConfig, context: RustfmtContext): string[] {

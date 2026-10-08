@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { RustFormatter, FormatterConfig, normalizeMacroSpacing, normalizeMacroBodies, getNativeMacroFormatterPath, formatWithNativeMacroFormatter, sha256File } from '../../formatter';
-import { changedLineBlocks } from '../../checkFormatting';
+import { applyHunksInLines, changedLineBlocks } from '../../lineDiff';
 
 const TEST_CONFIG: FormatterConfig = {
     rustfmtPath: 'rustfmt',
@@ -172,26 +172,70 @@ suite('RustFormatter', () => {
 
     suite('formatRange', () => {
 
-        test('leaves code outside the selection untouched', async () => {
+        const rangeFormatter = (): RustFormatter => new RustFormatter({
+            rustfmtPath: 'rustfmt',
+            extraArgs: [],
+            nativeMacroFormatter: true
+        });
+
+        const openRust = async (text: string): Promise<vscode.TextDocument> => {
             fs.writeFileSync(path.join(workspaceRoot, 'Cargo.toml'), '[package]\nname = "test"\nedition = "2021"\n');
             const testFile = path.join(workspaceRoot, 'lib.rs');
-            fs.writeFileSync(testFile, 'fn a(){let x=1;}\nfn b(){let y=2;}\n');
-            const document = await vscode.workspace.openTextDocument(testFile);
-            const nativeFormatter = new RustFormatter({
-                rustfmtPath: 'rustfmt',
-                extraArgs: [],
-                nativeMacroFormatter: true
-            });
+            fs.writeFileSync(testFile, text);
+            return vscode.workspace.openTextDocument(testFile);
+        };
 
-            const result = await nativeFormatter.formatRange(document, new vscode.Range(0, 0, 0, 16));
+        test('formats the selection and leaves the rest untouched', async () => {
+            const document = await openRust('fn a(){let x=1;}\n\nfn b(){let y=2;}\n');
 
-            // Stable rustfmt has no --file-lines and refuses (null); nightly
-            // formats line 1 only. Either way `fn b` is not the formatter's
-            // to touch.
-            assert.ok(
-                result === null || result.includes('fn b(){let y=2;}'),
-                `code outside the range changed: ${JSON.stringify(result)}`
+            const result = await rangeFormatter().formatRange(document, new vscode.Range(0, 0, 0, 16));
+
+            assert.strictEqual(result, 'fn a() {\n    let x = 1;\n}\n\nfn b(){let y=2;}\n');
+        });
+
+        test('formats macro bodies inside the selection', async () => {
+            const document = await openRust(
+                'macro_rules! m {\n    ($x:expr) => { $x+1 };\n}\n\nfn b(){let y=2;}\n'
             );
+
+            const result = await rangeFormatter().formatRange(document, new vscode.Range(1, 0, 1, 10));
+
+            assert.strictEqual(
+                result,
+                'macro_rules! m {\n    ($x:expr) => {\n        $x + 1\n    };\n}\n\nfn b(){let y=2;}\n'
+            );
+        });
+
+        test('refuses a selection that would apply half of a move', async () => {
+            // rustfmt sorts these imports: in a line diff that is a deletion
+            // here and an insertion further down. Applying only the part on
+            // the selected line would lose `use b`.
+            const document = await openRust('use b;\nuse a;\n\nfn f() {}\n');
+
+            const result = await rangeFormatter().formatRange(document, new vscode.Range(0, 0, 0, 6));
+
+            assert.ok(
+                result === null || (result.includes('use a;') && result.includes('use b;')),
+                `an import was lost: ${JSON.stringify(result)}`
+            );
+        });
+    });
+
+    suite('applyHunksInLines', () => {
+
+        test('applies only the changes that touch the selected lines', () => {
+            const original = 'a\nb\n\nc\nd\n';
+            const formatted = 'A\nB\n\nC\nD\n';
+            assert.strictEqual(applyHunksInLines(original, formatted, 0, 0), 'A\nB\n\nc\nd\n');
+            assert.strictEqual(applyHunksInLines(original, formatted, 3, 4), 'a\nb\n\nC\nD\n');
+        });
+
+        test('returns the original when nothing in the selection changes', () => {
+            assert.strictEqual(applyHunksInLines('a\n\nb\n', 'a\n\nB\n', 0, 0), 'a\n\nb\n');
+        });
+
+        test('applies an insertion at the edge of the selection', () => {
+            assert.strictEqual(applyHunksInLines('a\nb\n', 'a\n\nb\n', 1, 1), 'a\n\nb\n');
         });
     });
 
@@ -481,6 +525,39 @@ suite('RustFormatter', () => {
             };
             const source = 'fn main() { let x = foo(aaaaaaaaaaaa, bbbbbbbbbbbbbbbb, ccccccccccccccc); }\n';
             const result = await formatWithNativeMacroFormatter(source, config, { cwd: undefined });
+            assert.deepStrictEqual(result, {
+                ok: true,
+                text: 'fn main() {\n    let x = foo(\n        aaaaaaaaaaaa,\n        bbbbbbbbbbbbbbbb,\n        ccccccccccccccc,\n    );\n}\n'
+            });
+        });
+
+        test('takes the edition from rustfmt.extraArgs instead of passing it twice', async () => {
+            // `async` is an identifier only in the 2015 edition.
+            const source = 'fn main() { let async = 1; }\n';
+            for (const extraArgs of [['--edition', '2015'], ['--edition=2015']]) {
+                const config: FormatterConfig = { rustfmtPath: 'rustfmt', extraArgs, nativeMacroFormatter: true };
+                const result = await formatWithNativeMacroFormatter(source, config, { cwd: undefined, edition: '2021' });
+                assert.deepStrictEqual(
+                    result,
+                    { ok: true, text: 'fn main() {\n    let async = 1;\n}\n' },
+                    JSON.stringify(extraArgs)
+                );
+            }
+        });
+
+        test('takes the config path from rustfmt.extraArgs instead of passing it twice', async () => {
+            const configPath = path.join(workspaceRoot, 'rustfmt.toml');
+            fs.writeFileSync(configPath, 'max_width = 40\n');
+            const config: FormatterConfig = {
+                rustfmtPath: 'rustfmt',
+                extraArgs: ['--config-path', configPath],
+                nativeMacroFormatter: true
+            };
+            const source = 'fn main() { let x = foo(aaaaaaaaaaaa, bbbbbbbbbbbbbbbb, ccccccccccccccc); }\n';
+            const result = await formatWithNativeMacroFormatter(source, config, {
+                cwd: undefined,
+                configPath: path.join(workspaceRoot, 'missing.toml')
+            });
             assert.deepStrictEqual(result, {
                 ok: true,
                 text: 'fn main() {\n    let x = foo(\n        aaaaaaaaaaaa,\n        bbbbbbbbbbbbbbbb,\n        ccccccccccccccc,\n    );\n}\n'

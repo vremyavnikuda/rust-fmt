@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- `--rustfmt-arg` for the standalone binary: one extra argument for every `rustfmt` call it makes, repeated for each argument, e.g. `--rustfmt-arg=--config --rustfmt-arg=max_width=80`.
+
+### Fixed
+
+- A `macro_rules!` whose last arm has no `;` no longer stops the whole file from formatting. `rustfmt` adds that `;`, and the safety check read the addition as corrupted code, so any file with such a macro fell back to plain `rustfmt` in VS Code and was left untouched in Vim. That is the usual way to write a single-arm macro.
+- Blank lines inside a `macro_rules!` body are kept, like everywhere else. They were deleted even with `rustfmt.compactBlankLines` off; with it on they are still removed.
+- A comment between two arms of a `macro_rules!`, or right after its opening brace, no longer makes the whole macro `SKIPPED`. The comment stays where it was.
+- A transcriber holding two blocks, `{{ a }; { b }}`, is no longer laid out as one `{{ .. }}` block with a stray `}; {` in the middle.
+- Format Selection changes only the selection. With the native formatter on, it reformatted the whole file. Formatting a range needs nightly `rustfmt`, which has `--file-lines`; stable `rustfmt` refuses it with an error.
+- Non-ASCII text in a large file no longer comes back as `�`. The formatter's output was decoded chunk by chunk, so a character split across two pipe reads was corrupted.
+- A crate that inherits its edition with `edition.workspace = true` is formatted with the workspace's edition instead of 2021. The edition is also read from `[package]` only, not from whichever table mentions `edition` first.
+- `rustfmt.extraArgs` now applies with the native formatter on, which is the default. It was silently ignored.
+- If `rust-fmt-mf` crashes, it still writes the original source to stdout and exits with an error. Before, a crash left stdout empty, and Vim's `formatprg` would have replaced the buffer with nothing.
+
 ## 0.1.12 - 0.1.14 - 2026-09-04
 
 ### Changed

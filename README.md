@@ -29,7 +29,7 @@ Works on **Linux, Windows, macOS**.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `rustfmt.path` | `"rustfmt"` | Path to rustfmt executable |
-| `rustfmt.extraArgs` | `[]` | Additional rustfmt arguments |
+| `rustfmt.extraArgs` | `[]` | Additional rustfmt arguments, also passed on by the macro formatter |
 | `rustfmt.onboarding.mode` | `"quiet"` | Onboarding mode (`quiet` / `guided`) |
 | `rustfmt.compactBlankLines` | `false` | Delete blank lines inside braces to keep large files compact |
 | `macroFormatter.native` | `true` | Enable `macro_rules!` body formatting |
@@ -144,6 +144,7 @@ require("conform").setup({
 | `--rustfmt-path` | `rustfmt` | Path to the `rustfmt` executable |
 | `--config-path` | auto | Path to `rustfmt.toml` / `.rustfmt.toml` |
 | `--compact-blank-lines` | off | Delete blank lines inside braces |
+| `--rustfmt-arg` | none | One extra argument for every `rustfmt` call; repeat it, e.g. `--rustfmt-arg=--config --rustfmt-arg=max_width=80` |
 
 `rustfmt.toml` and `rust-toolchain.toml` are picked up from the working
 directory upwards without any flags — `rustfmt` searches for its own config,
@@ -157,10 +158,11 @@ producing wrong output — change the `--edition` value to match.
 
 ## How it works
 
-Runs `rustfmt --emit stdout` with auto-detected crate root, edition, and config. When `macroFormatter.native` is enabled, formats `macro_rules!` bodies via `rust-fmt-mf` (skipped by standard rustfmt).
+Runs `rustfmt --emit stdout` with auto-detected crate root, edition, and config. The edition comes from `[package]` in the nearest `Cargo.toml`, following `edition.workspace = true` to the workspace root. When `macroFormatter.native` is enabled, formats `macro_rules!` bodies via `rust-fmt-mf` (skipped by standard rustfmt).
 
 Also detects `rust-toolchain` and `rustfmt.toml`, skips files over 2 MB.
 
 ## Troubleshooting
 
 - `rustfmt` not found: run `rustup component add rustfmt` or set `rustfmt.path`.
+- Format Selection fails with `Unrecognized option: 'file-lines'`: formatting a range needs `--file-lines`, which only nightly `rustfmt` has. On stable, format the whole document instead.

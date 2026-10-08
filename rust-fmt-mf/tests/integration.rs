@@ -1253,3 +1253,20 @@ fn cli_passes_extra_arguments_to_rustfmt() {
         "fn main() {\n    let x = foo(\n        aaaaaaaaaaaa,\n        bbbbbbbbbbbbbbbb,\n        ccccccccccccccc,\n    );\n}\n"
     );
 }
+
+#[test]
+fn a_crash_that_cannot_be_caught_still_returns_the_source() {
+    // Deep enough to overflow the stack of any thread that recurses into it.
+    // A stack overflow aborts the process outright -- no unwinding, no
+    // error path -- and Vim and Neovim replace the buffer with whatever
+    // stdout held, whatever the exit status. So this must still come back.
+    let depth = 100_000;
+    let source = format!(
+        "macro_rules! m {{ ($x:expr) => {{ {}$x{} }}; }}\n",
+        "$(".repeat(depth),
+        ")*".repeat(depth)
+    );
+    let (ok, stdout, stderr) = run_binary(&source);
+    assert!(!ok, "a crash must still be reported as a failure");
+    assert!(stdout == source, "stdout lost the source; stderr: {stderr:.300}");
+}

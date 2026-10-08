@@ -1391,7 +1391,10 @@ fn format_source_once(
     } else {
         definitions.clone()
     };
-    assert_eq!(refreshed_definitions.len(), definitions.len());
+    anyhow::ensure!(
+        refreshed_definitions.len() == definitions.len(),
+        "macro definitions changed in number while formatting"
+    );
 
     let deep_definitions: Vec<(usize, &crate::types::MacroDef)> = refreshed_definitions
         .iter()
@@ -1444,7 +1447,10 @@ fn format_source_once(
             // to get their current spans rather than reusing stale ones
             // captured before that edit.
             let current_definitions = parse_macro_defs(&text)?;
-            assert_eq!(current_definitions.len(), refreshed_definitions.len());
+            anyhow::ensure!(
+                current_definitions.len() == refreshed_definitions.len(),
+                "macro definitions changed in number while formatting"
+            );
             for &index in excluded_indices.iter().rev() {
                 let Some(definition) = current_definitions.get(index) else {
                     continue;

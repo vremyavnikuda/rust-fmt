@@ -20,8 +20,24 @@ pub fn reset_rustfmt_call_count() {
     cache().lock().unwrap().clear();
 }
 
-/// (format_macros, rustfmt_path, edition, config_path, source)
-type CacheKey = (bool, String, String, Option<String>, String);
+/// (format_macros, rustfmt_path, edition, config_path, extra_args, source)
+type CacheKey = (bool, String, String, Option<String>, Vec<String>, String);
+
+/// ponytail: process-global rather than another parameter on the twenty
+/// functions between `main` and `spawn_rustfmt`. The binary formats one file
+/// per process and sets this once before it starts; thread it through if the
+/// library ever needs different arguments for two calls in one process.
+static EXTRA_ARGS: OnceLock<Vec<String>> = OnceLock::new();
+
+/// Arguments appended to every rustfmt call, after this crate's own, so a
+/// user's `--config` wins over the defaults. Only the first call has effect.
+pub fn set_extra_rustfmt_args(args: Vec<String>) {
+    let _ = EXTRA_ARGS.set(args);
+}
+
+fn extra_args() -> &'static [String] {
+    EXTRA_ARGS.get().map_or(&[], Vec::as_slice)
+}
 
 /// ponytail: unbounded process-local memo. `rust-fmt-mf` is one-shot per
 /// file, and the convergence loop feeds the same text to rustfmt over and
@@ -72,6 +88,7 @@ fn run_cached(
         rustfmt_path.to_string(),
         edition.to_string(),
         config_path.map(str::to_string),
+        extra_args().to_vec(),
         source.to_string(),
     );
     if let Some(hit) = cache().lock().unwrap().get(&key) {
@@ -118,6 +135,7 @@ fn spawn_rustfmt(
     if let Some(path) = config_path {
         cmd.args(["--config-path", path]);
     }
+    cmd.args(extra_args());
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());

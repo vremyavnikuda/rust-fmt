@@ -1,0 +1,5 @@
+macro_rules! tagged { // what it does
+    ($x:expr) => { $x*2 }; // doubles
+    () => { 0 } // nothing
+    // more arms later
+}

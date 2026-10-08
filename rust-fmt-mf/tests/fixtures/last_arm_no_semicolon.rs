@@ -1,0 +1,17 @@
+macro_rules! add_one {
+    ($x:expr) => {
+        $x + 1
+    }
+}
+
+macro_rules! one_liner { () => { 1 } }
+
+macro_rules! two_arms {
+    () => { 0 };
+    ($x:expr) => { $x }
+}
+
+fn main() {
+    let a = add_one!(1)+one_liner!();
+    let b = two_arms!(a);
+}

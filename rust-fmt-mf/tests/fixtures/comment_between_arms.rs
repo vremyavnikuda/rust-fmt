@@ -1,0 +1,12 @@
+macro_rules! pick {
+    // no arguments
+    () => { 0 };
+    // one argument
+    ($x:expr) => { $x+1 };
+    /* the rest */
+    ($x:expr, $($rest:expr),+) => { $x+pick!($($rest),+) };
+}
+
+fn main() {
+    let n = pick!(1, 2);
+}

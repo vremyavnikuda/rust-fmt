@@ -23,10 +23,9 @@ pub fn apply_formatting(
         result.push_str(&original_source[source_position..definition.span.start]);
         let first_arm = &definition.arms[0];
         let header = &original_source[definition.span.start..first_arm.pattern_span.start];
-        let keyword = header.find("macro_rules").unwrap_or(0);
+        let (keyword, open, open_end) = macro_header(header);
         result.push_str(&header[..keyword]);
         let macro_indent = structural_indent(original_source, definition.span.start + keyword);
-        let open = header.trim_end().chars().last().unwrap_or('{');
         let close = match open {
             '(' => ')',
             '[' => ']',
@@ -37,6 +36,7 @@ pub fn apply_formatting(
         result.push_str(&definition.name);
         result.push(' ');
         result.push(open);
+        push_gap_comments(&mut result, &header[open_end..], arm_indent);
         result.push('\n');
 
         for (arm_index, arm) in definition.arms.iter().enumerate() {
@@ -58,7 +58,7 @@ pub fn apply_formatting(
             let formatted_inner = crate::normalize_body_indent(&format_body_spacing(
                 &map_arm_section_with_original(section, mapping, original_inner),
             ));
-            let double_brace = original_body.starts_with("{{");
+            let double_brace = is_double_brace_body(original_body);
             if formatted_inner.trim().is_empty() {
                 result.push_str(if double_brace { "{{}}" } else { "{}" });
             } else {
@@ -69,10 +69,23 @@ pub fn apply_formatting(
                     .map(|line| line.len() - line.trim_start().len())
                     .min()
                     .unwrap_or(0);
-                for line in formatted_inner
-                    .lines()
-                    .filter(|line| !line.trim().is_empty())
-                {
+                // Blank lines are the author's, as in rustfmt: one survives
+                // per run, none at the edges. `--compact-blank-lines` drops
+                // the rest later, in `normalize_layout_gaps`.
+                let lines: Vec<&str> = formatted_inner.lines().collect();
+                let first = lines.iter().position(|line| !line.trim().is_empty());
+                let last = lines.iter().rposition(|line| !line.trim().is_empty());
+                let body = match (first, last) {
+                    (Some(first), Some(last)) => &lines[first..=last],
+                    _ => &[][..],
+                };
+                for (index, line) in body.iter().enumerate() {
+                    if line.trim().is_empty() {
+                        if !body[index - 1].trim().is_empty() {
+                            result.push('\n');
+                        }
+                        continue;
+                    }
                     let trimmed = line.trim_start();
                     let relative_indent = line.len() - trimmed.len();
                     result.push_str(
@@ -92,11 +105,7 @@ pub fn apply_formatting(
                 .get(arm_index + 1)
                 .map_or(definition.span.end, |next| next.pattern_span.start);
             let separator = &original_source[arm.body_span.end..following];
-            if separator.contains(';') {
-                result.push(';');
-            } else if separator.contains(',') {
-                result.push(',');
-            }
+            push_arm_separator(&mut result, separator, arm_indent);
             result.push('\n');
         }
 
@@ -117,6 +126,105 @@ pub fn apply_formatting(
     result
 }
 
+/// Whether a transcriber is `{{ .. }}`: one block that is the whole body,
+/// which is written with its braces hugging the outer ones. `{{a}; {b}}` also
+/// starts and ends with two braces, but holds two blocks, so the inner `{`
+/// has to close exactly before the outer `}`.
+pub(crate) fn is_double_brace_body(body: &str) -> bool {
+    let Ok(tokens) = crate::parser::significant_tokens(body) else {
+        return false;
+    };
+    let last = tokens.len().saturating_sub(1);
+    // Written `{{` and `}}`: braces on separate lines are two plain blocks.
+    if tokens.len() < 4
+        || tokens[0].text != "{"
+        || tokens[1].text != "{"
+        || tokens[0].span.end != tokens[1].span.start
+        || tokens[last - 1].span.end != tokens[last].span.start
+    {
+        return false;
+    }
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate().skip(1) {
+        match token.text.as_str() {
+            "{" | "(" | "[" => depth += 1,
+            "}" | ")" | "]" => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return index == last - 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Where `macro_rules` starts in a definition's header, which delimiter
+/// opens its arms, and the byte just past that delimiter. Read from tokens,
+/// not text: a doc comment above may say `macro_rules`, and a comment after
+/// the delimiter can end in any character at all.
+fn macro_header(header: &str) -> (usize, char, usize) {
+    let tokens = crate::parser::significant_tokens(header).unwrap_or_default();
+    let keyword = tokens
+        .iter()
+        .position(|token| token.kind == "Ident" && token.text == "macro_rules");
+    match keyword.and_then(|keyword| Some((keyword, tokens.get(keyword + 3)?))) {
+        Some((keyword, open)) if matches!(open.text.as_str(), "{" | "(" | "[") => (
+            tokens[keyword].span.start,
+            open.text.chars().next().unwrap_or('{'),
+            open.span.end,
+        ),
+        _ => (header.find("macro_rules").unwrap_or(0), '{', header.len()),
+    }
+}
+
+/// Emit the `;` or `,` that ended an arm, if there was one, then the
+/// comments that followed it.
+fn push_arm_separator(output: &mut String, separator: &str, indent: usize) {
+    let punctuation = crate::parser::significant_tokens(separator)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|token| !is_comment_token(token));
+    if let Some(token) = punctuation.filter(|token| token.text == ";" || token.text == ",") {
+        output.push_str(&token.text);
+    }
+    push_gap_comments(output, separator, indent);
+}
+
+fn is_comment_token(token: &crate::parser::SignificantToken) -> bool {
+    token.kind.starts_with("LineComment") || token.kind.starts_with("BlockComment")
+}
+
+/// Copy the comments in `gap` -- text between two parts of a definition that
+/// this module re-emits by hand -- into `output`. A comment that shared a
+/// line with what came before stays on it; any other gets its own line at
+/// `indent`. Stops at the first token that is neither a comment nor an arm
+/// separator: the delimiter that closes the definition.
+fn push_gap_comments(output: &mut String, gap: &str, indent: usize) {
+    let Ok(tokens) = crate::parser::significant_tokens(gap) else {
+        return;
+    };
+    let mut previous_end = 0usize;
+    for token in tokens {
+        if !is_comment_token(&token) {
+            if token.text != ";" && token.text != "," {
+                break;
+            }
+            previous_end = token.span.end;
+            continue;
+        }
+        if gap[previous_end..token.span.start].contains('\n') {
+            output.push('\n');
+            output.push_str(&" ".repeat(indent));
+        } else {
+            output.push(' ');
+        }
+        output.push_str(&token.text);
+        previous_end = token.span.end;
+    }
+}
+
 pub(crate) fn format_definition_without_brace_bodies(
     source: &str,
     definition: &MacroDef,
@@ -125,10 +233,9 @@ pub(crate) fn format_definition_without_brace_bodies(
     result.push_str(&source[..definition.span.start]);
     let first_arm = &definition.arms[0];
     let header = &source[definition.span.start..first_arm.pattern_span.start];
-    let keyword = header.find("macro_rules").unwrap_or(0);
+    let (keyword, open, open_end) = macro_header(header);
     result.push_str(&header[..keyword]);
     let macro_indent = structural_indent(source, definition.span.start + keyword);
-    let open = header.trim_end().chars().last().unwrap_or('{');
     let close = match open {
         '(' => ')',
         '[' => ']',
@@ -139,6 +246,7 @@ pub(crate) fn format_definition_without_brace_bodies(
     result.push_str(&definition.name);
     result.push(' ');
     result.push(open);
+    push_gap_comments(&mut result, &header[open_end..], arm_indent);
     result.push('\n');
 
     for (index, arm) in definition.arms.iter().enumerate() {
@@ -166,11 +274,7 @@ pub(crate) fn format_definition_without_brace_bodies(
             .get(index + 1)
             .map_or(definition.span.end, |next| next.pattern_span.start);
         let separator = &source[arm.body_span.end..following];
-        if separator.contains(';') {
-            result.push(';');
-        } else if separator.contains(',') {
-            result.push(',');
-        }
+        push_arm_separator(&mut result, separator, arm_indent);
         result.push('\n');
     }
 
@@ -508,7 +612,11 @@ fn format_body_spacing(source: &str) -> String {
         return generated;
     }
     let mut lines = Vec::new();
-    for line in source.lines().filter(|line| !line.trim().is_empty()) {
+    for line in source.lines() {
+        if line.trim().is_empty() {
+            lines.push(String::new());
+            continue;
+        }
         let indent = line.len() - line.trim_start().len();
         let original = line.trim();
         let mut formatted = if contains_comment(original)
@@ -1553,8 +1661,9 @@ fn replace_rep_markers(text: &str, repetition_prefix: &str) -> String {
                                 indented.push('\n');
                             }
                         }
-                        // Remove trailing newline
-                        let indented = indented.trim_end_matches('\n');
+                        // Blank lines at either edge are the delimiters' own
+                        // newlines, not the author's.
+                        let indented = indented.trim_matches('\n');
                         result.push('$');
                         result.push('(');
                         result.push('\n');

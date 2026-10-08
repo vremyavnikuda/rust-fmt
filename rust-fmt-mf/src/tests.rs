@@ -957,3 +957,11 @@ fn the_whole_file_oracle_allows_reordering_but_not_invention() {
     let renamed = "use std::sync::RwLock;\nuse std::collections::HashMap;\n";
     assert!(super::ensure_tokens_preserved_across_rustfmt_pass(before, renamed).is_err());
 }
+
+#[test]
+fn rustfmt_pass_oracle_accepts_an_added_semicolon_but_not_a_dropped_one() {
+    let without = "macro_rules! m { () => { 1 } }\n";
+    let with = "macro_rules! m {\n    () => {\n        1\n    };\n}\n";
+    assert!(super::ensure_tokens_preserved_across_rustfmt_pass(without, with).is_ok());
+    assert!(super::ensure_tokens_preserved_across_rustfmt_pass(with, without).is_err());
+}

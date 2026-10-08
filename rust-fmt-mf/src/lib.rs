@@ -1197,7 +1197,7 @@ fn build_arm_shadow_fragment(
 ) -> (String, Mapping) {
     let arm_body_text = &source[arm.body_span.clone()];
     let body_text = arm_body_text.trim();
-    let inner = if body_text.starts_with("{{") && body_text.ends_with("}}") {
+    let inner = if mapper::is_double_brace_body(body_text) {
         &body_text[2..body_text.len() - 2]
     } else {
         &body_text[1..body_text.len() - 1]
@@ -1689,14 +1689,22 @@ fn ensure_tokens_preserved_across_rustfmt_pass(before: &str, after: &str) -> any
     };
     let before = census(before)?;
     let after = census(after)?;
-    if before == after {
-        return Ok(());
-    }
+    // rustfmt may *add* a `;`: it terminates the last arm of a
+    // `macro_rules!` and a trailing `return`/`break`. It never drops one, and
+    // a dropped `;` can turn a statement into a tail expression, so only the
+    // increase is tolerated.
+    let acceptable = |key: &(String, String)| {
+        let (old, new) = (
+            before.get(key).copied().unwrap_or(0),
+            after.get(key).copied().unwrap_or(0),
+        );
+        old == new || (key.1 == ";" && new > old)
+    };
     let mut differences: Vec<String> = before
         .iter()
         .chain(after.iter())
         .map(|(key, _)| key)
-        .filter(|key| before.get(*key) != after.get(*key))
+        .filter(|key| !acceptable(key))
         .map(|key| {
             format!(
                 "{} {:?} {}->{}",
@@ -1707,6 +1715,9 @@ fn ensure_tokens_preserved_across_rustfmt_pass(before: &str, after: &str) -> any
             )
         })
         .collect();
+    if differences.is_empty() {
+        return Ok(());
+    }
     differences.sort();
     differences.dedup();
     differences.truncate(5);

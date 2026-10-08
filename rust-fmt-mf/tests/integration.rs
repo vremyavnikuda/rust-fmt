@@ -1222,3 +1222,34 @@ fn halve(mut a: u32) -> u32 {
     let actual = rust_fmt_mf::format_source(source, "rustfmt", "2021", None).unwrap();
     assert_eq!(actual, source, "{actual:?}");
 }
+
+/// `rustfmt.extraArgs` from the editor reach every rustfmt call the binary
+/// makes, so a `max_width` passed there is honoured just as plain rustfmt
+/// would honour it.
+#[test]
+fn cli_passes_extra_arguments_to_rustfmt() {
+    let source = "fn main() { let x = foo(aaaaaaaaaaaa, bbbbbbbbbbbbbbbb, ccccccccccccccc); }\n";
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rust-fmt-mf"))
+        .args(["--rustfmt-arg=--config", "--rustfmt-arg=max_width=40"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(source.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "fn main() {\n    let x = foo(\n        aaaaaaaaaaaa,\n        bbbbbbbbbbbbbbbb,\n        ccccccccccccccc,\n    );\n}\n"
+    );
+}

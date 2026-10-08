@@ -22,16 +22,26 @@ struct Cli {
     /// Off by default, matching rustfmt, which preserves them.
     #[arg(long)]
     compact_blank_lines: bool,
+
+    /// One extra argument for rustfmt, e.g. `--rustfmt-arg=--config
+    /// --rustfmt-arg=max_width=80`. Repeat for each argument.
+    #[arg(long, allow_hyphen_values = true)]
+    rustfmt_arg: Vec<String>,
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    rust_fmt_mf::formatter::set_extra_rustfmt_args(cli.rustfmt_arg.clone());
     let mut source = String::new();
     if let Err(error) = io::stdin().read_to_string(&mut source) {
         eprintln!("rust-fmt-mf\tERROR\tcannot read stdin: {error}");
         return ExitCode::FAILURE;
     }
-    match format(&source, &cli) {
+    // A panic is caught for the same reason an error is: either way the
+    // source has to come back on stdout. The default hook still reports it.
+    let outcome = std::panic::catch_unwind(|| format(&source, &cli))
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("rust-fmt-mf panicked")));
+    match outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             // A filter that cannot format still has to hand back what it was

@@ -1013,7 +1013,12 @@ fn expand_generated_where_clauses(source: &str) -> String {
         if let Some(where_token) = where_token {
             let where_start = tokens[where_token].span.start;
             let where_end = tokens[where_token].span.end;
-            output.push(canonical_token_spacing(&trimmed[..where_start]));
+            // Nothing before a `where` that opens the line: pushing the empty
+            // prefix anyway would become a blank line in the output.
+            let head = canonical_token_spacing(&trimmed[..where_start]);
+            if !head.is_empty() {
+                output.push(head);
+            }
             output.push("where".to_string());
             let remainder = trimmed[where_end..].trim();
             if let Some(open) = first_brace_span(remainder) {
@@ -1025,6 +1030,14 @@ fn expand_generated_where_clauses(source: &str) -> String {
                 }
                 awaiting_brace = true;
             }
+            continue;
+        }
+
+        // A bare `where` has nothing behind it to split off, but its body's
+        // `{` is still to come, possibly glued to the fields after it.
+        if tokens.len() == 1 && tokens[0].text == "where" {
+            output.push(line.to_string());
+            awaiting_brace = true;
             continue;
         }
 
@@ -1042,12 +1055,25 @@ fn expand_generated_where_clauses(source: &str) -> String {
     output.join("\n")
 }
 
+/// The `{` that opens an item body: the last one outside every delimiter,
+/// so the braces of a const expression such as `[(); { N }]` never qualify.
 fn first_brace_span(source: &str) -> Option<std::ops::Range<usize>> {
-    crate::parser::significant_tokens(source)
-        .ok()?
-        .into_iter()
-        .rfind(|token| token.text == "{")
-        .map(|token| token.span)
+    let mut depth = 0usize;
+    let mut found = None;
+    for token in crate::parser::significant_tokens(source).ok()? {
+        match token.text.as_str() {
+            "{" => {
+                if depth == 0 {
+                    found = Some(token.span);
+                }
+                depth += 1;
+            }
+            "(" | "[" => depth += 1,
+            ")" | "]" | "}" => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    found
 }
 
 fn push_where_remainder(output: &mut Vec<String>, remainder: &str, open: std::ops::Range<usize>) {

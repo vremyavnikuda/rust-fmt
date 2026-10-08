@@ -165,4 +165,4 @@ Also detects `rust-toolchain` and `rustfmt.toml`, skips files over 2 MB.
 ## Troubleshooting
 
 - `rustfmt` not found: run `rustup component add rustfmt` or set `rustfmt.path`.
-- Format Selection fails with `Unrecognized option: 'file-lines'`: formatting a range needs `--file-lines`, which only nightly `rustfmt` has. On stable, format the whole document instead.
+- Format Selection changes nothing: the selected lines cannot be formatted apart from the rest of the file, usually because `rustfmt` would move an import elsewhere. The log says so; format the whole document instead.

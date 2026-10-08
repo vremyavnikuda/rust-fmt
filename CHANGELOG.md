@@ -16,11 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Blank lines inside a `macro_rules!` body are kept, like everywhere else. They were deleted even with `rustfmt.compactBlankLines` off; with it on they are still removed.
 - A comment between two arms of a `macro_rules!`, or right after its opening brace, no longer makes the whole macro `SKIPPED`. The comment stays where it was.
 - A transcriber holding two blocks, `{{ a }; { b }}`, is no longer laid out as one `{{ .. }}` block with a stray `}; {` in the middle.
-- Format Selection changes only the selection. With the native formatter on, it reformatted the whole file. Formatting a range needs nightly `rustfmt`, which has `--file-lines`; stable `rustfmt` refuses it with an error.
+- Format Selection works, on stable `rustfmt` too, and formats macro bodies like a whole-document format does. It relied on `--file-lines`, which stable `rustfmt` does not have and nightly accepts only with `--unstable-features`, so it failed everywhere — and with the native formatter on, it reformatted the whole file instead. The file is now formatted as usual and only the changes that touch the selected lines are kept; a change that crosses the edge of the selection is taken whole. When the selection cannot be formatted apart from the rest, such as an import that `rustfmt` would move elsewhere, nothing changes and the log says why.
+- `--edition` or `--config-path` in `rustfmt.extraArgs` no longer turns macro formatting off. Both were passed to `rustfmt` twice, which it rejects; your value now replaces the detected one, as it already did without the native formatter.
 - Non-ASCII text in a large file no longer comes back as `�`. The formatter's output was decoded chunk by chunk, so a character split across two pipe reads was corrupted.
 - A crate that inherits its edition with `edition.workspace = true` is formatted with the workspace's edition instead of 2021. The edition is also read from `[package]` only, not from whichever table mentions `edition` first.
 - `rustfmt.extraArgs` now applies with the native formatter on, which is the default. It was silently ignored.
-- If `rust-fmt-mf` crashes, it still writes the original source to stdout and exits with an error. Before, a crash left stdout empty, and Vim's `formatprg` would have replaced the buffer with nothing.
+- If `rust-fmt-mf` crashes, it still writes the original source to stdout and exits with an error. Vim and Neovim replace the formatted lines with whatever the formatter printed, whatever its exit status, so a crash used to empty the buffer. Formatting now runs in a child process, and the parent hands back the source if that child panics, overflows its stack, or is killed. Deeply nested `$( ... )*` repetitions were one input that overflowed the stack.
 
 ## 0.1.12 - 0.1.14 - 2026-09-04
 

@@ -32,6 +32,8 @@ Works on **Linux, Windows, macOS**.
 | `rustfmt.extraArgs` | `[]` | Additional rustfmt arguments, also passed on by the macro formatter |
 | `rustfmt.onboarding.mode` | `"quiet"` | Onboarding mode (`quiet` / `guided`) |
 | `rustfmt.compactBlankLines` | `false` | Delete blank lines inside braces to keep large files compact |
+| `rustfmt.formatMacroBodies` | `false` | Pass `format_macro_bodies=true` to rustfmt (nightly toolchain) |
+| `rustfmt.formatMacroMatchers` | `false` | Pass `format_macro_matchers=true` to rustfmt (nightly toolchain) |
 | `macroFormatter.native` | `true` | Enable `macro_rules!` body formatting |
 | `macroFormatter.path` | auto | Path to `rust-fmt-mf` binary |
 
@@ -55,11 +57,13 @@ Delete blank lines inside braces:
 | Command | Description |
 |---------|-------------|
 | Format Document with rustfmt | Current file (on save) |
+| Format Selection with rustfmt | Only the changes that touch the selected lines |
 | Format Workspace with rustfmt | All Rust files in workspace |
 | Format Changed Rust Files | Files from `git diff` |
 | Format Staged Rust Files | Files from `git diff --cached` |
 | Check Formatting | Report unformatted files without changing them |
-| Open Control Center | Quick action menu |
+| Open Control Center | Quick action menu (also as Open Behavior Controls) |
+| Set as Default Formatter | Make rust-fmt the Rust formatter, globally or for the workspace |
 | Open Logs | Output channel |
 
 ## Vim / Neovim
@@ -115,7 +119,10 @@ cargo install --git https://github.com/vremyavnikuda/rust-fmt rust-fmt-mf
 autocmd FileType rust setlocal formatprg=rust-fmt-mf\ --edition\ 2021
 ```
 
-Format the buffer with `gggqG`, or a selection with `gq`.
+Format the buffer with `gggqG`, or a selection with `gq`. A selection has to
+hold whole items, such as complete functions; part of one is left unchanged,
+because the formatter cannot parse it on its own. If formatting fails for any
+reason, the lines come back exactly as they were.
 
 ### Neovim with conform.nvim
 

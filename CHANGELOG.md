@@ -6,42 +6,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-### Added
-
-- `--rustfmt-arg` for the standalone binary: one extra argument for every `rustfmt` call it makes, repeated for each argument, e.g. `--rustfmt-arg=--config --rustfmt-arg=max_width=80`.
-
-### Fixed
-
-- A `macro_rules!` whose last arm has no `;` no longer stops the whole file from formatting. `rustfmt` adds that `;`, and the safety check read the addition as corrupted code, so any file with such a macro fell back to plain `rustfmt` in VS Code and was left untouched in Vim. That is the usual way to write a single-arm macro.
-- Blank lines inside a `macro_rules!` body are kept, like everywhere else. They were deleted even with `rustfmt.compactBlankLines` off; with it on they are still removed.
-- A comment between two arms of a `macro_rules!`, or right after its opening brace, no longer makes the whole macro `SKIPPED`. The comment stays where it was.
-- A struct generated inside a macro body keeps its fields on their own lines when its `where` stands alone on a line. With the `{ fields }` on a line further down, the body stayed glued together as `{ $(pub $field: $ty),+ }`.
-- A transcriber holding two blocks, `{{ a }; { b }}`, is no longer laid out as one `{{ .. }}` block with a stray `}; {` in the middle.
-- Format Selection works, on stable `rustfmt` too, and formats macro bodies like a whole-document format does. It relied on `--file-lines`, which stable `rustfmt` does not have and nightly accepts only with `--unstable-features`, so it failed everywhere — and with the native formatter on, it reformatted the whole file instead. The file is now formatted as usual and only the changes that touch the selected lines are kept; a change that crosses the edge of the selection is taken whole. When the selection cannot be formatted apart from the rest, such as an import that `rustfmt` would move elsewhere, nothing changes and the log says why.
-- `--edition` or `--config-path` in `rustfmt.extraArgs` no longer turns macro formatting off. Both were passed to `rustfmt` twice, which it rejects; your value now replaces the detected one, as it already did without the native formatter.
-- Non-ASCII text in a large file no longer comes back as `�`. The formatter's output was decoded chunk by chunk, so a character split across two pipe reads was corrupted.
-- A crate that inherits its edition with `edition.workspace = true` is formatted with the workspace's edition instead of 2021. The edition is also read from `[package]` only, not from whichever table mentions `edition` first.
-- `rustfmt.extraArgs` now applies with the native formatter on, which is the default. It was silently ignored.
-- If `rust-fmt-mf` crashes, it still writes the original source to stdout and exits with an error. Vim and Neovim replace the formatted lines with whatever the formatter printed, whatever its exit status, so a crash used to empty the buffer. Formatting now runs in a child process, and the parent hands back the source if that child panics, overflows its stack, or is killed. Deeply nested `$( ... )*` repetitions were one input that overflowed the stack.
-
-## 0.1.12 - 0.1.14 - 2026-09-04
-
 ### Changed
 
-- Formatting a macro-heavy file is about three times faster. A 356-line file went from 2.5 s to 0.84 s, a 404-line one from 2.9 s to 1.45 s. Output is unchanged.
 - Your blank lines are left alone by default. Previously every blank line inside braces, between struct fields and after an attribute was deleted, so the first format of an ordinary file produced a huge diff that had nothing to do with macros. To get the old compact output back, set `rustfmt.compactBlankLines` to `true`.
 
 ### Added
 
 - `rustfmt.compactBlankLines` setting, and `--compact-blank-lines` for the standalone binary. Off by default; on, it strips blank lines inside braces to keep large files short.
+- `--rustfmt-arg` for the standalone binary: one extra argument for every `rustfmt` call it makes, repeated for each argument, e.g. `--rustfmt-arg=--config --rustfmt-arg=max_width=80`.
 - One-line install of the standalone binary for Vim and Neovim: `curl -fsSL .../install.py | python3 -` on Linux and macOS, `irm .../install.py | python -` on Windows. One script for all three systems, needing Python 3.8 or newer. Puts `rust-fmt-mf` in `~/.local/bin` and checks its SHA-256 against the release; prints the line to add to your shell config on Linux and macOS, and adds the directory to your user `PATH` on Windows. `RUSTFMT_MF_VERSION` pins a release, `RUSTFMT_MF_BIN_DIR` installs elsewhere.
 
 ### Fixed
 
-- Files that quietly skipped macro formatting now format. Any file with two import groups separated by a blank line, or with a short `match` arm, silently fell back to plain `rustfmt` and showed a "macro bodies left unformatted" warning. That was most real files.
-- Code inside a `macro_rules!` body is now laid out like code outside one. Items get a blank line between them, and `fn f() {}` stays on one line instead of being split in two.
-- A `quote! { ... }` block is no longer mangled. A `macro_rules!` written inside another macro's arguments was treated as a real definition and reformatted, leaving it worse than `rustfmt` had it.
+- `rust-fmt-mf` never leaves you with an empty buffer. Vim and Neovim replace the formatted lines with whatever the formatter printed, whatever its exit status. When formatting fails it now prints the source it was given and exits with an error, and since formatting runs in a child process, the parent does the same if that child panics, overflows its stack, or is killed. Deeply nested `$( ... )*` repetitions were one input that overflowed the stack.
+- A `macro_rules!` whose last arm has no `;` no longer stops the whole file from formatting. `rustfmt` adds that `;`, and the safety check read the addition as corrupted code, so any file with such a macro fell back to plain `rustfmt` in VS Code and was left untouched in Vim. That is the usual way to write a single-arm macro.
+- Code inside a `macro_rules!` body is laid out like code outside one. Items get a blank line between them, and `fn f() {}` stays on one line instead of being split in two.
+- Blank lines inside a `macro_rules!` body are kept, like everywhere else. They were deleted even with `rustfmt.compactBlankLines` off; with it on they are still removed.
+- A comment between two arms of a `macro_rules!`, or right after its opening brace, no longer makes the whole macro `SKIPPED`. The comment stays where it was.
+- A struct generated inside a macro body keeps its fields on their own lines when its `where` stands alone on a line. With the `{ fields }` on a line further down, the body stayed glued together as `{ $(pub $field: $ty),+ }`.
+- A transcriber holding two blocks, `{{ a }; { b }}`, is no longer laid out as one `{{ .. }}` block with a stray `}; {` in the middle.
+- A generic closing `>` followed by `=` keeps its space: `pub type Alias<T> = Vec<T>` inside a macro body came out as `Vec<T>= ...`, read as the operator `>=`, and formatting again never healed it.
+- Format Selection works, on stable `rustfmt` too, and formats macro bodies like a whole-document format does. It relied on `--file-lines`, which stable `rustfmt` does not have and nightly accepts only with `--unstable-features`, so it failed everywhere — and with the native formatter on, it reformatted the whole file instead. The file is now formatted as usual and only the changes that touch the selected lines are kept; a change that crosses the edge of the selection is taken whole. When the selection cannot be formatted apart from the rest, such as an import that `rustfmt` would move elsewhere, nothing changes and the log says why.
+- `rustfmt.extraArgs` applies with the native formatter on, which is the default. It was silently ignored. An `--edition` or `--config-path` there replaces the detected one, as it already did without the native formatter, instead of reaching `rustfmt` twice, which it rejects.
+- Non-ASCII text in a large file no longer comes back as `�`. The formatter's output was decoded chunk by chunk, so a character split across two pipe reads was corrupted.
+- A crate that inherits its edition with `edition.workspace = true` is formatted with the workspace's edition. The macro formatter assumed 2021 and plain `rustfmt` got no edition at all. The edition is also read from `[package]` only, not from whichever table mentions `edition` first.
 - `rust-fmt: Open Logs` shows the log again. It was empty in 0.1.12 unless you changed VS Code's log level by hand; now every line is there, including which formatter binary actually ran.
+
+## 0.1.12 - 2026-09-04
+
+### Changed
+
+- Formatting a macro-heavy file is about three times faster. A 356-line file went from 2.5 s to 0.84 s, a 404-line one from 2.9 s to 1.45 s. Output is unchanged.
+- Dropped the `syn` dependency, which was declared but never called.
+
+### Fixed
+
+- Files that quietly skipped macro formatting now format. Any file with two import groups separated by a blank line, or with a short `match` arm, silently fell back to plain `rustfmt` and showed a "macro bodies left unformatted" warning. That was most real files.
+- A `quote! { ... }` block is no longer mangled. A `macro_rules!` written inside another macro's arguments was treated as a real definition and reformatted, leaving it worse than `rustfmt` had it.
+- Logs go to the extension's own output channel, the one `rust-fmt: Open Logs` opens. Most of them used to land in the Extension Host developer console.
 
 ## 0.1.11 - 2026-09-04
 

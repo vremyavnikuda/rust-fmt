@@ -22,6 +22,15 @@ jobs:
         run: npm run lint
       - name: Compile
         run: npm run compile
+      # The extension tests run the bundled native formatter; the committed
+      # bin/ copy lags behind the source, so test against a fresh build.
+      - name: Setup Rust
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup component add rustfmt
+      - name: Build native formatter
+        run: python scripts/build_current.py --release
       - name: Test extension
         run: xvfb-run -a npm test
 
